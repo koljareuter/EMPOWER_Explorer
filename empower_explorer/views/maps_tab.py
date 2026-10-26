@@ -13,14 +13,16 @@ Layout
                pixels the selected fit used, with a unit-Gaussian overlay
 
 Map sources
-    'Voronoi fit'                    tools/voronoi_binning.py products (MapProduct.is_pipeline, listed
-                                     first and shown by default): Voronoi bins on the anchor-line S/N,
-                                     1-3 Gaussian components per line group (Hβ, [OIII], Hα+[NII],
-                                     [SII]), ratios; maps on the anchor-band grid.  A click shows the
-                                     bin's spectrum around the chosen line group, taken from the band
-                                     of that group (BINMAP_<band>) with the pipeline's own noise model,
-                                     and the fitted model rebuilt from the BINS row (vb.model_curve:
-                                     total + every component; no refit).  'Compute Voronoi fit' runs
+    'Voronoi fit'                    empower_explorer.pipeline.voronoi_binning products (schema
+                                     EMPOWER-VORONOI-2; MapProduct.is_pipeline, listed first and shown by
+                                     default): Voronoi bins on the anchor-line S/N, 1-3 Gaussian
+                                     components per line group (Hβ, [OIII], Hα+[NII], [SII]), ratios;
+                                     maps on the anchor-band grid.  A click shows the bin's spectrum
+                                     around the chosen line group, taken from the band of that group
+                                     (BINMAP_<band>) with the noise model stored in the product
+                                     (vb.region_spectrum: exactly the spectrum that was fitted), and the
+                                     fitted model rebuilt from the BINS row (vb.model_curve: total +
+                                     every component; no refit).  'Compute Voronoi fit' runs
                                      vb.run_galaxy for the current galaxy in a worker and writes the
                                      product to products.pipeline_dir(root, variant)
     MapProduct of state.products()   resolved maps of the notebooks ('Spaxel fits', 'Voronoi',
@@ -38,7 +40,6 @@ grids with analysis.transfer (same sky position).
 """
 import json
 import os
-import sys
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -60,17 +61,14 @@ from empower_explorer.widgets.plots import (EmptyState, ImagePanel, add_spans, a
                                             make_plot, robust_levels)
 from empower_explorer.workers import run_async
 
-# The Voronoi pipeline (Qt-free library next to the package).  The repo root is on sys.path when the
-# app runs; added here for other entry points.  Without it the tab still works, minus the spectra of
-# Voronoi-fit products and the Compute button (the reason is shown in the tab).
-_REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if os.path.isdir(os.path.join(_REPO, 'tools')) and _REPO not in sys.path:
-    sys.path.append(_REPO)
+# The Voronoi pipeline (Qt-free, empower_explorer/pipeline).  Without it (e.g. vorbin missing) the tab
+# still works, minus the spectra of Voronoi-fit products and the Compute button (the reason is shown).
 try:
-    from tools import voronoi_binning as vb
+    from empower_explorer.pipeline import voronoi_binning as vb
     _VB_ERROR = ''
 except Exception as _e:          # pragma: no cover - shown in the tab
     vb, _VB_ERROR = None, f'{type(_e).__name__}: {_e}'
+_VB_NAME = 'the Voronoi pipeline (empower_explorer/pipeline/voronoi_binning.py)'
 
 LIVE_LINES = ['Ha', 'OIII5007', 'Hb', 'SII6716', 'NII6583']
 BINNINGS = [(1, '1×1'), (2, '2×2'), (3, '3×3')]
@@ -84,21 +82,34 @@ _NAME_LINES = [('OIII5007', 'OIII5007'), ('OIII4959', 'OIII4959'), ('NII6583', '
                ('HA', 'Ha'), ('HB', 'Hb'), ('O3', 'OIII5007'), ('N2', 'NII6583'), ('S2', 'SII6716'),
                ('LOG_N2', 'NII6583'), ('LOG_O3HA', 'OIII5007'), ('LOG_S2HA', 'SII6716'),
                ('NE_SII', 'SII6716'), ('OH_M13', 'NII6583'), ('EW_HA', 'Ha'),
-               # Voronoi-fit products: group maps ('OIII_V50') and ratios
-               ('OIII', 'OIII5007'), ('SII', 'SII6716'), ('LOG_O3', 'OIII5007'), ('LOG_S2', 'SII6716'),
-               ('LOG_O3N2', 'OIII5007'), ('OH_N2_M13', 'NII6583'), ('SII_RATIO', 'SII6716')]
+               # Voronoi-fit products: group maps ('HANII_V50', 'OIII_V50') and ratios
+               ('HANII', 'Ha'), ('HBETA', 'Hb'), ('OIII', 'OIII5007'), ('SII', 'SII6716'),
+               ('LOG_O3', 'OIII5007'), ('LOG_S2', 'SII6716'), ('LOG_O3N2', 'OIII5007'),
+               ('OH_N2_M13', 'NII6583'), ('SII_RATIO', 'SII6716')]
 
-# Line groups of the Voronoi-fit products (tools/voronoi_binning.GROUPS; copy for when it is missing)
+# Line groups of the Voronoi-fit products (vb.GROUPS; copy for when the pipeline can not be imported)
 GROUPS = vb.GROUPS if vb is not None else {
-    'hb': dict(label='Hβ', lines=['Hb'], main='Hb'),
-    'oiii': dict(label='[OIII]', lines=['OIII4959', 'OIII5007'], main='OIII5007'),
-    'ha': dict(label='Hα+[NII]', lines=['NII6548', 'Ha', 'NII6583'], main='Ha'),
-    'sii': dict(label='[SII]', lines=['SII6716', 'SII6731'], main='SII6716')}
+    'hb': dict(tag='HBETA', label='Hβ', lines=['Hb'], main='Hb'),
+    'oiii': dict(tag='OIII', label='[OIII]', lines=['OIII4959', 'OIII5007'], main='OIII5007'),
+    'ha': dict(tag='HANII', label='Hα+[NII]', lines=['NII6548', 'Ha', 'NII6583'], main='Ha'),
+    'sii': dict(tag='SII', label='[SII]', lines=['SII6716', 'SII6731'], main='SII6716')}
 GROUP_KEYS = ('hb', 'oiii', 'ha', 'sii')                 # wavelength order (spectrum chooser)
 COMP_COLORS = ('#A3E635', '#22D3EE', '#E879F9')           # Gaussian components 1..3 (dashed)
 _GROUP_TOKENS = sorted([('OIII4959', 'oiii'), ('OIII5007', 'oiii'), ('OIII', 'oiii'), ('NII6548', 'ha'),
-                        ('NII6583', 'ha'), ('HA', 'ha'), ('HB', 'hb'), ('SII6716', 'sii'),
-                        ('SII6731', 'sii'), ('SII', 'sii')], key=lambda t: -len(t[0]))
+                        ('NII6583', 'ha'), ('HA', 'ha'), ('HANII', 'ha'), ('HB', 'hb'), ('HBETA', 'hb'),
+                        ('SII6716', 'sii'), ('SII6731', 'sii'), ('SII', 'sii')], key=lambda t: -len(t[0]))
+# <G>_QFLAG bits of the pipeline (vb.QF_*)
+_QFLAGS = ((1, 'χ²ν high'), (2, 'pixels clipped'), (4, 'a component unresolved'), (8, '[SII] ratio at a limit'))
+
+
+def _gtag(g):
+    """Column prefix of a line group in the products ('ha' -> 'HANII')."""
+    return GROUPS[g].get('tag', g.upper())
+
+
+def _ltag(line):
+    """Column prefix of a line in the products ('Ha' -> 'HA')."""
+    return line.upper()
 _RATIOS = ['LOG_N2', 'LOG_O3', 'LOG_S2', 'LOG_O3N2', 'OH_N2_M13', 'SII_RATIO', 'NE_SII', 'EW_HA']
 _RATIO_GROUP = {'LOG_N2': 'ha', 'OH_N2_M13': 'ha', 'EW_HA': 'ha', 'LOG_O3': 'oiii', 'LOG_O3N2': 'oiii',
                 'LOG_S2': 'sii', 'SII_RATIO': 'sii', 'NE_SII': 'sii'}
@@ -259,7 +270,7 @@ def _pipe_order(names, anchor):
         g = _group_of_map(n)
         if g not in groups:
             return (len(groups) + 2, pos[n], 0)
-        G, M = g.upper(), GROUPS[g]['main'].upper()
+        G, M = _gtag(g), _ltag(GROUPS[g]['main'])
         first = ([f'{M}_FLUX', f'{M}_SNR', f'{G}_V50', f'{G}_W80']
                  + [f'{G}_C{k}_{q}' for k in (1, 2, 3) for q in ('V', 'SIG')]
                  + [f'{G}_NCOMP', f'{G}_CHI2NU', f'{M}_FLUX_ERR'] + [f'{M}_C{k}_FLUX' for k in (1, 2, 3)])
@@ -269,7 +280,7 @@ def _pipe_order(names, anchor):
 
 def _pipe_defaults(names, anchor):
     """Default maps of a Voronoi fit: anchor-line flux, anchor v50 (else C1 velocity), anchor W80."""
-    G, M = anchor.upper(), GROUPS[anchor]['main'].upper()
+    G, M = _gtag(anchor), _ltag(GROUPS[anchor]['main'])
     out = []
     for cands in ((f'{M}_FLUX', 'SN_LINE'), (f'{G}_V50', f'{G}_C1_V'), (f'{G}_W80', f'{G}_C1_SIG')):
         n = next((c for c in cands if c in names and c not in out), None)
@@ -299,30 +310,29 @@ def _config_from(d):
         return vb.Config()
 
 
-def _read_product_config(path):
-    """Config a Voronoi-fit product was made with (JSON in the HISTORY cards of its header)."""
-    from astropy.io import fits
-    try:
-        with fits.open(path) as h:
-            hist = ''.join(str(c) for c in h[0].header.get('HISTORY', []))
-        i = hist.find('config: ')
-        d = json.JSONDecoder().raw_decode(hist[i + len('config: '):])[0] if i >= 0 else {}
-    except (OSError, ValueError, IndexError):
-        d = {}
-    return _config_from(d)
+def _rows_of(df):
+    """{bin: row dict} of a BINS / TOTAL table (strings stripped)."""
+    rows = {}
+    if df is not None and 'BIN' in df.columns:
+        for r in df.to_dict('records'):
+            rows[int(r['BIN'])] = {k: (v.strip() if isinstance(v, str) else v) for k, v in r.items()}
+    return rows
 
 
 def _load_product_data(prod):
-    """Worker: {'maps'} of a MapProduct; Voronoi fits also {'rows': {bin: BINS row}, 'cfg': Config}."""
+    """Worker: {'maps'} of a MapProduct; Voronoi fits also 'rows' {bin: BINS row}, 'total' (TOTAL row
+    or None), 'cfg' (vb.Config), 'noise' {band: noise model}, 'rest' {line: micron} (vb.read_product).
+    'cfg' stays None for products of another schema (their columns differ): no spectra then."""
     out = {'maps': prod.load()}
-    if prod.is_pipeline:
-        bins = prod.bins_table()
-        rows = {}
-        if bins is not None and 'BIN' in bins.columns:
-            for r in bins.to_dict('records'):
-                rows[int(r['BIN'])] = {k: (v.strip() if isinstance(v, str) else v) for k, v in r.items()}
-        out['rows'] = rows
-        out['cfg'] = _read_product_config(prod.path)
+    if not prod.is_pipeline:
+        return out
+    if vb is not None and prod.schema == vb.SCHEMA:
+        P = vb.read_product(prod.path)
+        tot = _rows_of(P['total'])
+        out.update(rows=_rows_of(P['bins']), total=tot.get(-1), cfg=P['config'] or vb.Config(),
+                   noise=P['noise'], rest=P['rest'])
+    else:
+        out.update(rows=_rows_of(prod.bins_table()), total=None, cfg=None, noise={}, rest=None)
     return out
 
 
@@ -339,9 +349,9 @@ def _product_from_file(path):
 
 
 def _update_index(out_dir, rec, variant, cfg):
-    """Enter this galaxy in index.json / index.csv of the product folder (for servers).  The
-    document-level config stays the batch one; this run's settings are in the record message and
-    in the FITS header.  Never fails the computation."""
+    """Refresh index.json / index.csv of the product folder (for servers; rebuilt from the product
+    headers).  The document-level config stays the batch one; this run's settings are in the FITS
+    header (CONFIG table).  Never fails the computation."""
     try:
         base = cfg
         p = os.path.join(out_dir, 'index.json')
@@ -358,12 +368,9 @@ def _run_voronoi(stacks, z, cfg, key, path, meta, variant, progress=None):
     Returns (MapProduct, loaded data, index record)."""
     prod = vb.run_galaxy(stacks, z, cfg, name=key, progress=progress)
     vb.write_product(prod, path, meta=meta)
-    rec = dict(key=key, file=os.path.basename(path),
-               status='ok' if prod['bin_mode'] == 'voronoi' else prod['bin_mode'], nbins=prod['nbins'],
-               anchor=prod['anchor'], anchor_band=prod['anchor_band'], target_sn=prod['target_sn'],
-               err_scale=prod['err_scale'], closure=prod['closure'], seconds=round(prod['seconds'], 1),
-               message=f'EMPOWER Explorer {__version__}: max {cfg.max_components} components, '
-                       f'target S/N {cfg.target_sn:g}')
+    rec = vb.record_from_header(path)
+    rec['message'] = (f'EMPOWER Explorer {__version__}: max {cfg.max_components} components, '
+                      f'target S/N {cfg.target_sn:g}')
     _update_index(os.path.dirname(path), rec, variant, cfg)
     mp = _product_from_file(path)
     return mp, _load_product_data(mp), rec
@@ -371,17 +378,16 @@ def _run_voronoi(stacks, z, cfg, key, path, meta, variant, progress=None):
 
 def _compute_bin(res, req):
     """Worker: spectrum of one Voronoi bin (or spaxel) in the band of one line group, made exactly as
-    the pipeline made it (vb.region_spectrum: sum of the spaxels, error sigma_1 sqrt(n) c(N) of its
-    noise model), and the fitted model rebuilt from the bin's BINS row (vb.model_curve) - the same
-    pixels and errors as the fit, so the residuals reproduce its chi2_nu.  No refit."""
+    the pipeline made it (vb.region_spectrum with the product's noise model of that band: background-
+    subtracted sum of the spaxels, error sigma_1 sqrt(n) c(N) x err_scale), and the fitted model
+    rebuilt from the bin's BINS row (vb.model_curve) - the same pixels and errors as the fit, so the
+    residuals reproduce its chi2_nu (up to clipped pixels).  No refit."""
     st, cfg, g, z = req['stack'], req['cfg'], res.group, req['z_ref']
-    noise = req['noise']
-    if noise is None:
-        sd1 = vb.spaxel_noise(st.cube, req['centre'], cfg.noise_rmin)
-        noise = (sd1, vb.noise_correlation(st.cube, sd1, req['centre'], cfg.noise_rmin))
-        res.noise = noise
+    nz = req['noise']
+    noise = vb.BandNoise(sd1=np.asarray(nz['sd1'], float), bg=np.asarray(nz['bg'], float), ncorr=nz['ncorr'],
+                         err_scale=float(nz['err_scale']))
     with np.errstate(all='ignore'):
-        spec, err = vb.region_spectrum(st.cube, req['sel'], noise[0], noise[1], cfg.edge_margin)
+        spec, err = vb.region_spectrum(st.cube, req['sel'], noise, cfg.edge_margin)
     wave = np.asarray(st.wave, float)
     gd = vb.GroupData(g, wave, spec, err, z, res.band, cfg)
     lines = GROUPS[g]['lines']
@@ -398,12 +404,13 @@ def _compute_bin(res, req):
     res.covered = list(getattr(gd, 'keys', []))
     res.n_spax = int(np.count_nonzero(req['sel']))
     res.has_data = bool(np.isfinite(res.spec).any())
-    row, G = res.row, g.upper()
+    row, G = res.row, _gtag(g)
     if row is not None and gd.ok and str(row.get(f'{G}_BAND', '') or '').strip() == res.band:
-        model = vb.model_curve(row, g, res.wave, z)
+        kw = dict(rest=req.get('rest'), resolving_power=nz.get('resolving_power'))
+        model = vb.model_curve(row, g, res.wave, z, **kw)
         if model is not None:
             mx = np.linspace(flo, fhi, max(400, 8 * gd.x.size))
-            total, parts = vb.model_curve(row, g, mx, z, components=True)
+            total, parts = vb.model_curve(row, g, mx, z, components=True, **kw)
             res.mx, res.mtotal, res.mparts = mx, total, parts
             res.mcont = row[f'{G}_CONT_A'] + row[f'{G}_CONT_B'] * (mx - row[f'{G}_X0'])
             with np.errstate(invalid='ignore', divide='ignore'):
@@ -532,7 +539,7 @@ class _BinResult:
     message: tuple | None = None    # (title, hint) when there is nothing to extract
     members: np.ndarray | None = None
     noise_key: tuple | None = None
-    noise: tuple | None = None      # (sigma_1, c(N)) computed by the worker, cached by the tab
+    noise: tuple | None = None      # unused for products (their noise model is stored in the file)
     wave: np.ndarray | None = None  # display window
     spec: np.ndarray | None = None
     err: np.ndarray | None = None
@@ -738,7 +745,7 @@ class MapsTab(QWidget):
                                  'of the map\'s own line where one exists, else the Hα S/N map)')
         self.snr_spin.valueChanged.connect(lambda _: self._redraw_maps(keep_view=True))
 
-        # Voronoi fit (tools/voronoi_binning.py) of the current galaxy
+        # Voronoi fit (empower_explorer/pipeline/voronoi_binning.py) of the current galaxy
         cfg0 = vb.Config() if vb is not None else None
         self.vcomp_label = _dim('Max comp.')
         self.vcomp_spin = QSpinBox()
@@ -958,7 +965,7 @@ class MapsTab(QWidget):
         if not pipe:
             ok, why = self._vfit_possible()
             cb.addItem('Voronoi fit  ·  not computed yet', 'vnew')
-            cb.setItemData(cb.count() - 1, 'No tools/voronoi_binning.py product for this galaxy yet: choose '
+            cb.setItemData(cb.count() - 1, 'No Voronoi-pipeline product for this galaxy yet: choose '
                            'this and press "Compute Voronoi fit"' if ok else f'Voronoi fit: {why}', Qt.ToolTipRole)
             cb.model().item(cb.count() - 1).setEnabled(ok)
         for i in pipe:
@@ -1006,11 +1013,14 @@ class MapsTab(QWidget):
         ts = _num(m.get('TARGETSN'))
         label = (f'Voronoi fit  ·  {n} bin{"s" if n != 1 else ""}  ·  {alab} ({m.get("ANCHBAND", "?")})  ·  '
                  f'max {m.get("MAXCOMP", "?")} comp.')
-        tip = (f'tools/voronoi_binning.py product {os.path.basename(p.path)}\n'
+        tip = (f'Voronoi-pipeline product {os.path.basename(p.path)}\n'
                f'{m.get("SCHEMA", "")}, pipeline {m.get("PIPEVER", "?")}, {m.get("DATE", "")}\n'
                f'bins: {m.get("BINMODE", "?")}' + (f', target S/N {ts:g}' if ts > 0 else '')
                + f' on {alab}; z_ref = {_num(m.get("Z_REF")):.5f}\n'
                f'bands {m.get("BANDS", "?")}; up to {m.get("MAXCOMP", "?")} Gaussian components per line group')
+        if str(m.get('STATUS', '')).strip() == 'no_detection':
+            label += '  ·  not detected'
+            tip += '\nanchor line not detected: one central aperture, fluxes forced to the reference kinematics'
         return label, tip
 
     def _kind_of(self, sid):
@@ -1256,7 +1266,7 @@ class MapsTab(QWidget):
         return ms
 
     def _pipeline_set(self, prod, data):
-        """Map set of a tools/voronoi_binning.py product: maps on the anchor-band grid; the bins on
+        """Map set of a Voronoi-pipeline product: maps on the anchor-band grid; the bins on
         the grids of the other bands (BINMAP_<band>, not listed), the BINS rows and the fit config
         go to ms.pipe."""
         meta, base = prod.meta, os.path.basename(prod.path)
@@ -1289,9 +1299,11 @@ class MapsTab(QWidget):
         main = GROUPS[anchor]['main']
         ms.pipe = dict(token=self._prod_token(prod), anchor=anchor, aband=aband, rows=rows,
                        groups=[g for g in GROUP_KEYS
-                               if any(str(r.get(f'{g.upper()}_BAND') or '').strip() for r in rows.values())],
+                               if any(str(r.get(f'{_gtag(g)}_BAND') or '').strip() for r in rows.values())],
                        z_ref=_num(meta.get('Z_REF', meta.get('Z'))), cfg=data.get('cfg'), band_binmaps=band_bms,
-                       err_scale=_num(meta.get('ERRSCALE'), 1.0), anchor_snr=f'{main.upper()}_SNR',
+                       err_scale={k[len('ERRSC_'):]: _num(v, 1.0) for k, v in meta.items() if k.startswith('ERRSC_')},
+                       anchor_snr=f'{_ltag(main)}_SNR', noise=data.get('noise') or {}, rest=data.get('rest'),
+                       total=data.get('total'), status=str(meta.get('STATUS') or '').strip(),
                        centre=(int(_num(meta.get('CENTY'), -1)), int(_num(meta.get('CENTX'), -1))))
         st = self.state.stacks.get(aband)
         ny, nx = ms.shape if ms.shape else (0, 0)
@@ -1308,16 +1320,22 @@ class MapsTab(QWidget):
             mode = str(meta.get('BINMODE') or '').strip()
             how = {'voronoi': f'{nb} Voronoi bins at S/N {ts:g}',
                    'single': 'one bin (smaller bins do not reach S/N 6)',
-                   'aperture': 'one central aperture (no spaxel above S/N 1)',
                    'spaxel': f'{nb} single spaxels'}.get(mode, f'{nb} bins ({mode})')
+            if ms.pipe['status'] == 'no_detection':
+                how = 'anchor line NOT detected: one central aperture, fluxes forced (upper limits)'
+                ms.warn = True
             ms.note = (f'Voronoi fit ({base}, pipeline {meta.get("PIPEVER", "?")}, '
                        f'{str(meta.get("DATE", ""))[:10]}) · {how} on {LINE_LABELS.get(main, main)} · '
                        f'{aband} grid, {nx}×{ny} spaxels of {st.pixscale:.2f}″ · bands '
                        f'{str(meta.get("BANDS") or aband).replace("+", ", ")} · velocities w.r.t. z_ref = '
                        f'{ms.pipe["z_ref"]:.5f} · click a bin for its spectrum and fit')
-            if vb is None or ms.pipe['cfg'] is None:
+            if vb is None:
                 ms.warn = True
-                ms.note += f' · spectra unavailable: tools/voronoi_binning.py not importable ({_VB_ERROR})'
+                ms.note += f' · spectra unavailable: {_VB_NAME} not importable ({_VB_ERROR})'
+            elif ms.pipe['cfg'] is None:
+                ms.warn = True
+                ms.note += (f' · made by an older pipeline ({prod.schema or "unknown schema"}): press '
+                            f'"Compute Voronoi fit" to update it (spectra and fit details need {vb.SCHEMA})')
         return ms
 
     def _vnew_set(self):
@@ -1361,7 +1379,7 @@ class MapsTab(QWidget):
         """(ok, reason) - can the Voronoi fit of the current galaxy be computed?"""
         st = self.state
         if vb is None:
-            return False, f'tools/voronoi_binning.py could not be imported ({_VB_ERROR})'
+            return False, f'{_VB_NAME} could not be imported ({_VB_ERROR})'
         if st.root is None or st.catalog is None or not st.key:
             return False, 'no galaxy loaded'
         if not st.stacks:
@@ -1386,7 +1404,7 @@ class MapsTab(QWidget):
         btn.setEnabled(ok and job is None)
         if ok:
             path = self._vfit_path()
-            btn.setToolTip('Run tools/voronoi_binning.py for this galaxy: Voronoi bins on the anchor-line S/N, '
+            btn.setToolTip('Run the Voronoi pipeline for this galaxy: Voronoi bins on the anchor-line S/N, '
                            '1 to "Max comp." Gaussian components per line group (Hβ, [OIII], Hα+[NII], [SII]), '
                            'line ratios. Runs in the background (seconds to a few minutes).\nWrites '
                            f'{path}' + (' (replaces the existing file)' if os.path.exists(path) else ''))
@@ -1702,7 +1720,7 @@ class MapsTab(QWidget):
             return (cx, cy) if (0 <= cy < ny and 0 <= cx < nx) else None
         if 0 <= cy < ny and 0 <= cx < nx and bm[cy, cx] >= 0:
             return cx, cy
-        main = GROUPS[P['anchor']]['main']
+        main = _ltag(GROUPS[P['anchor']]['main'])
         snr = {b: _num(r.get(f'{main}_SNR')) for b, r in P['rows'].items()}
         snr = {b: s for b, s in snr.items() if np.isfinite(s) and (bm == b).any()}
         if snr:
@@ -1955,7 +1973,7 @@ class MapsTab(QWidget):
         or (None, _BinResult with .message, None) when there is nothing to extract."""
         P, stacks = ms.pipe, self.state.stacks
         g = self._spectrum_group(ms)
-        G, glab, z = g.upper(), GROUPS[g]['label'], P['z_ref']
+        G, glab, z = _gtag(g), GROUPS[g]['label'], P['z_ref']
         bm = ms.binmaps.get('BINMAP')
         bin_id = int(bm[y, x]) if bm is not None else -1
         row = P['rows'].get(bin_id) if bin_id >= 0 else None
@@ -2000,19 +2018,13 @@ class MapsTab(QWidget):
             sel[iy, ix] = True
             res.note = ('This spaxel is in no Voronoi bin (anchor-line S/N too low or outside the binned '
                         'region): its spectrum, without fit.')
-        # noise model of that band, centred as in the pipeline: the anchor band on the galaxy centre,
-        # the other bands on the centroid of their bins
-        cy, cx = P['centre']
-        if band == P['aband'] and 0 <= cy < ny and 0 <= cx < nx:
-            centre = (cy, cx)
-        elif bmb is not None and (bmb >= 0).any():
-            cb = np.argwhere(bmb >= 0).mean(0)
-            centre = (int(round(cb[0])), int(round(cb[1])))
-        else:
-            centre = (ny // 2, nx // 2)
-        res.noise_key = (P['token'], band, centre)
-        req = dict(stack=st, cfg=P['cfg'], sel=sel, centre=centre, z_ref=z,
-                   noise=self._noise_cache.get(res.noise_key))
+        # the noise model the pipeline used in that band (stored in the product)
+        nz = P['noise'].get(band)
+        if nz is None or len(nz['sd1']) != st.wave.size:
+            res.message = (f'No noise model for {band}',
+                           f'The product has no NOISE_{band} table matching the {band} stack.')
+            return None, res, None
+        req = dict(stack=st, cfg=P['cfg'], sel=sel, z_ref=z, noise=nz, rest=P['rest'])
         ckey = ('bin', P['token'], bin_id if bin_id >= 0 else ('spaxel', x, y), g, band)
         return ckey, res, (req,)
 
@@ -2071,9 +2083,12 @@ class MapsTab(QWidget):
                 elif ms.empty_msg == 'press Compute Voronoi fit':
                     hint = 'Press "Compute Voronoi fit", then click a bin.'
             self._spec_message(text, hint)
-        elif ms.pipe is not None and (vb is None or ms.pipe['cfg'] is None):
-            self._spec_message('Spectra unavailable', f'tools/voronoi_binning.py could not be imported '
+        elif ms.pipe is not None and vb is None:
+            self._spec_message('Spectra unavailable', f'{_VB_NAME} could not be imported '
                                                       f'({_VB_ERROR}): the fitted models can not be rebuilt.')
+        elif ms.pipe is not None and ms.pipe['cfg'] is None:
+            self._spec_message('Spectra unavailable', 'This Voronoi fit was made by an older pipeline version: '
+                                                      'press "Compute Voronoi fit" to update it.')
         elif not ms.grid_ok:
             self._spec_message('Spectra unavailable (grid differs)',
                                'These maps are not on the pixel grid of a loaded stack, so a map pixel '
@@ -2342,9 +2357,10 @@ class MapsTab(QWidget):
         """The bin's results for the group: components (v, σ_int ± errors, flux of the main line),
         forced / free, ΔBIC, v50, W80, χ²ν and the S/N of every line of the group."""
         P, g = ms.pipe, res.group
-        G, grp = g.upper(), GROUPS[g]
+        G, grp = _gtag(g), GROUPS[g]
         dim = f'color:{C.TEXT_DIM}'
         main = grp['main']
+        M = _ltag(main)
         col = LINE_COLORS.get(main, C.TEXT)
         alab = GROUPS[P['anchor']]['label']
         cfg = P['cfg']
@@ -2362,15 +2378,22 @@ class MapsTab(QWidget):
         else:
             n = _num(r.get(f'{G}_NCOMP'))
             ncomp = int(n) if np.isfinite(n) else 0
-            forced = bool(r.get(f'{G}_FORCED'))
-            dbic = _num(r.get(f'{G}_DBIC'))
+            forced = _num(r.get(f'{G}_FORCED')) == 1
+            dbic = _num(r.get(f'{G}_DBIC_NCOMP' if g == P['anchor'] else f'{G}_DBIC_FREE'))
             fb = cfg.force_below if cfg is not None else 5.0
+            detected_bins = any(_num(x.get(f'{G}_FORCED')) == 0 for x in P['rows'].values())
             if g == P['anchor']:
-                kin = ('<b>free</b> fit (anchor line: sets the kinematics of the other groups)' if not forced else
-                       f'<b>forced</b>: {alab} too weak here (S/N &lt; {fb:g}), kinematics of the central spectrum')
+                if not forced:
+                    kin = '<b>free</b> fit (anchor line: sets the kinematics of the other groups)'
+                elif detected_bins:
+                    kin = (f'<b>forced</b>: {alab} too weak here (S/N &lt; {fb:g}), velocity interpolated from '
+                           'the detected bins')
+                else:
+                    kin = (f'<b>forced</b>: {alab} not detected (S/N &lt; {fb:g}), reference kinematics '
+                           '(catalogue redshift) - the fluxes are upper limits')
             else:
                 kin = (f'<b>own kinematics</b> (ΔBIC {dbic:.1f} vs tied to {alab})' if not forced else
-                       f'<b>forced</b> to the {alab} kinematics (own ones not favoured by BIC)')
+                       f'<b>forced</b> to the {alab} kinematics of this bin (own ones not favoured by BIC)')
             rows.append(f'<span style="{dim}">Kinematics:</span> {kin}')
             comp = f'<b>{ncomp}</b> Gaussian component{"s" if ncomp != 1 else ""}'
             if g == P['anchor'] and not forced and ncomp > 1 and np.isfinite(dbic):
@@ -2379,29 +2402,48 @@ class MapsTab(QWidget):
             for k in range(1, ncomp + 1):
                 ccol = COMP_COLORS[(k - 1) % len(COMP_COLORS)] if ncomp > 1 else col
                 frac = _num(r.get(f'{G}_C{k}_FRAC'))
-                rows.append(f'<span style="color:{ccol}; font-weight:bold">C{k}</span> '
-                            f'v {_fkms(r.get(f"{G}_C{k}_V"), r.get(f"{G}_C{k}_VERR"), True)} · '
-                            f'σ<sub>int</sub> {_fkms(r.get(f"{G}_C{k}_SIG"), r.get(f"{G}_C{k}_SIGERR"))} km/s')
+                if forced:      # template (model) kinematics: not a measurement of this group
+                    kv = (f'template v {_fkms(r.get(f"{G}_C{k}_MV"), signed=True)} · '
+                          f'σ<sub>int</sub> {_fkms(r.get(f"{G}_C{k}_MSIG"))} km/s')
+                else:
+                    kv = (f'v {_fkms(r.get(f"{G}_C{k}_V"), r.get(f"{G}_C{k}_VERR"), True)} · '
+                          f'σ<sub>int</sub> {_fkms(r.get(f"{G}_C{k}_SIG"), r.get(f"{G}_C{k}_SIGERR"))} km/s')
+                    if _num(r.get(f'{G}_C{k}_UNRES')) == 1:
+                        kv += f' <span style="{dim}">(unresolved)</span>'
+                rows.append(f'<span style="color:{ccol}; font-weight:bold">C{k}</span> {kv}')
                 rows.append(f'&nbsp;&nbsp;&nbsp;&nbsp;<span style="{dim}">{LINE_LABELS.get(main, main)}</span> '
-                            f'{_fmt(r.get(f"{main}_C{k}_FLUX"))}'
+                            f'{_fmt(r.get(f"{M}_C{k}_FLUX"))} ± {_fmt(r.get(f"{M}_C{k}_FLUX_ERR"))}'
                             + (f' <span style="{dim}">({100 * frac:.0f} %)</span>' if np.isfinite(frac) else ''))
             if forced:
                 rows.append(f'<span style="{dim}">v50, W80: not measured (fixed kinematics)</span>')
+            elif not np.isfinite(_num(r.get(f'{G}_V50'))):
+                rows.append(f'<span style="{dim}">v50, W80: not published (S/N below '
+                            f'{cfg.kin_snr_min if cfg is not None else 5:g})</span>')
             else:
                 rows.append(f'<span style="{dim}">v50</span> {_fkms(r.get(f"{G}_V50"), signed=True)} &nbsp; '
                             f'<span style="{dim}">W80</span> {_fkms(r.get(f"{G}_W80"))} km/s')
+            cgs = _num(r.get(f'{M}_FLUX_CGS'))
             rows.append(f'<span style="{dim}">{LINE_LABELS.get(main, main)} flux</span> '
-                        f'{_fmt(r.get(f"{main}_FLUX"))} ± {_fmt(r.get(f"{main}_FLUX_ERR"))} '
-                        f'<span style="{dim}">{unit}·µm</span>')
+                        f'{_fmt(r.get(f"{M}_FLUX"))} ± {_fmt(r.get(f"{M}_FLUX_ERR"))} '
+                        f'<span style="{dim}">{unit}·µm</span>'
+                        + (f' <span style="{dim}">≈ {_fmt(cgs)} × 10⁻¹⁷ erg/s/cm²</span>' if np.isfinite(cgs) else ''))
             sn = [f'<span style="color:{LINE_COLORS.get(k, C.TEXT)}">{LINE_LABELS.get(k, k)}</span> '
-                  f'{_fmt(r.get(f"{k}_SNR"))}' for k in grp['lines'] if np.isfinite(_num(r.get(f'{k}_SNR')))]
+                  f'{_fmt(r.get(f"{_ltag(k)}_SNR"))}' for k in grp['lines']
+                  if np.isfinite(_num(r.get(f'{_ltag(k)}_SNR')))]
             if sn:
                 rows.append(f'<span style="{dim}">S/N</span> ' + ' · '.join(sn))
             npix = int(np.count_nonzero(res.used)) if res.used is not None else 0
             rows.append(f'<span style="{dim}">χ²ν</span> {_fmt(r.get(f"{G}_CHI2NU"))}'
                         + (f' <span style="{dim}">({npix} pixels)</span>' if npix else ''))
-            if P['err_scale'] > 1.001:
-                rows.append(f'<span style="{dim}">errors × {P["err_scale"]:.2f} (null test)</span>')
+            q = int(_num(r.get(f'{G}_QFLAG'), 0))
+            flags = [txt for bit, txt in _QFLAGS if q & bit]
+            if flags:
+                nclip = int(_num(r.get(f'{G}_NCLIP'), 0))
+                flags = [f'{t} ({nclip})' if t == 'pixels clipped' else t for t in flags]
+                rows.append(f'<span style="color:{C.AMBER}">flags: {", ".join(flags)}</span>')
+            es = P['err_scale'].get(res.band, 1.0)
+            if abs(es - 1.0) > 0.001:
+                rows.append(f'<span style="{dim}">errors × {es:.2f} in {res.band} (null tests)</span>')
         if res.note:
             rows.append(f'<span style="color:{C.AMBER}">{res.note}</span>')
         rows += self._map_values_html(ms, res.x, res.y)

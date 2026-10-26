@@ -1,0 +1,9 @@
+# EMPOWER Explorer (Python >= 3.10)
+PyQt5>=5.15
+pyqtgraph>=0.13
+numpy>=1.24
+scipy>=1.10
+astropy>=5.3
+pandas>=2.0
+vorbin>=3.1          # Voronoi binning of the line-map pipeline (empower_explorer/pipeline)
+# build the Windows .exe:  pip install pyinstaller  &&  pyinstaller EMPOWER_Explorer.spec

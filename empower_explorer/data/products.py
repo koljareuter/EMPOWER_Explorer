@@ -7,9 +7,10 @@ Found automatically in the EMPOWER folder:
                                          LOG_N2, OH_M13, LOG_S2HA, NE_SII, LOG_O3HA, ...
   kmos_<name>_maps.fits                  other resolved products (e.g. kmos_xmm2215_31179_maps.fits)
   kmos_voronoi_maps/<reduction>/<FIELD>_<tid>_voronoi.fits
-                                         tools/voronoi_binning.py products (schema EMPOWER-VORONOI-1) of the
-                                         loaded reduction, for every galaxy: Voronoi bins, 1-3 Gaussian
-                                         components per line group, ratios; table BINS with all parameters
+                                         empower_explorer.pipeline.voronoi_binning products (schema
+                                         EMPOWER-VORONOI-2) of the loaded reduction, for every galaxy:
+                                         Voronoi bins, 1-3 Gaussian components per line group, ratios;
+                                         tables BINS / TOTAL with all parameters, the noise model, config
 The galaxy is read from the OBJECT keyword ('CDFS 23420').  The maps are on the pixel grid of the
 stacked cube of their band in kmos_comb_ohlin_tell (same stacking as data/stack.py), scaled by SPXBIN.
 """
@@ -45,8 +46,12 @@ class MapProduct:
 
     @property
     def is_pipeline(self):
-        """Made by tools/voronoi_binning.py (fluxes already in BUNIT x micron, table BINS)."""
+        """Made by the Voronoi pipeline (fluxes already in BUNIT x micron, table BINS)."""
         return str(self.meta.get('SCHEMA', '')).startswith('EMPOWER-VORONOI')
+
+    @property
+    def schema(self):
+        return str(self.meta.get('SCHEMA', '') or '').strip()
 
     def bins_table(self):
         """pandas DataFrame of the BINS table (pipeline products), else None."""
@@ -56,7 +61,12 @@ class MapProduct:
             from astropy.table import Table
             try:
                 with fits.open(self.path) as h:
-                    self.__dict__['_bins'] = Table.read(h['BINS']).to_pandas() if 'BINS' in h else None
+                    t = Table.read(h['BINS']).to_pandas() if 'BINS' in h else None
+                if t is not None:                   # FITS strings may come back as bytes
+                    for c in t.columns:
+                        if t[c].dtype == object:
+                            t[c] = [v.decode().strip() if isinstance(v, bytes) else v for v in t[c]]
+                self.__dict__['_bins'] = t
             except Exception:
                 self.__dict__['_bins'] = None
         return self.__dict__['_bins']
@@ -92,7 +102,7 @@ PIPELINE_DIR = 'kmos_voronoi_maps'
 
 
 def pipeline_dir(root, variant):
-    """Folder of the tools/voronoi_binning.py products of one reduction."""
+    """Folder of the Voronoi-pipeline products of one reduction."""
     return os.path.join(root, PIPELINE_DIR, variant)
 
 
@@ -149,29 +159,38 @@ def pretty_map_name(name, bunit=None):
     return label
 
 
-_GROUP_LABELS = {'HA': 'Hα+[NII]', 'HB': 'Hβ', 'OIII': '[OIII]', 'SII': '[SII]'}
+# Voronoi-pipeline names (schema EMPOWER-VORONOI-2): group tags and line tags
+_GROUP_LABELS = {'HANII': 'Hα+[NII]', 'HBETA': 'Hβ', 'OIII': '[OIII]', 'SII': '[SII]'}
 _PIPE_LINES = {'HA': 'Ha', 'HB': 'Hb', 'OIII5007': 'OIII5007', 'OIII4959': 'OIII4959', 'NII6583': 'NII6583',
                'NII6548': 'NII6548', 'SII6716': 'SII6716', 'SII6731': 'SII6731'}
+_GROUP_RE = '|'.join(_GROUP_LABELS)
+_LINE_RE = '|'.join(sorted(_PIPE_LINES, key=len, reverse=True))
 
 
 def _pretty_pipeline(n):
-    """Names of tools/voronoi_binning.py products, None if `n` is not one of them."""
-    special = {'SN_LINE': 'Anchor-line S/N per spaxel (binning input)', 'LOG_O3': 'log [OIII]/Hβ',
-               'LOG_S2': 'log [SII]/Hα', 'LOG_O3N2': 'O3N2', 'SII_RATIO': '[SII] 6716/6731',
-               'OH_N2_M13': '12+log(O/H) N2 (M13)'}
+    """Names of Voronoi-pipeline products, None if `n` is not one of them."""
+    special = {'SN_LINE': 'Anchor-line S/N per spaxel (binning input)', 'LOG_N2': 'log [NII]/Hα',
+               'LOG_O3': 'log [OIII]/Hβ', 'LOG_S2': 'log [SII]/Hα', 'LOG_O3N2': 'O3N2',
+               'SII_RATIO': '[SII] 6716/6731', 'NE_SII': 'n_e([SII]) [cm⁻³]', 'OH_N2_M13': '12+log(O/H) N2 (M13)',
+               'EW_HA': 'EW(Hα) rest [Å]'}
     if n in special:
         return special[n]
-    m = re.match(r'^(HA|HB|OIII|SII)_(NCOMP|V50|W80|V10|V90|CHI2NU|C(\d)_(V|SIG))$', n)
+    m = re.match(rf'^({_GROUP_RE})_(NCOMP|V50|W80|V10|V90|CHI2NU|FORCED|QFLAG|C(\d)_(V|SIG|FRAC))$', n)
     if m:
         g = _GROUP_LABELS[m.group(1)]
         what = {'NCOMP': 'number of components', 'V50': 'v50 (median velocity) [km/s]',
-                'W80': 'W80 [km/s]', 'V10': 'v10 [km/s]', 'V90': 'v90 [km/s]', 'CHI2NU': 'reduced χ²'}
+                'W80': 'W80 [km/s]', 'V10': 'v10 [km/s]', 'V90': 'v90 [km/s]', 'CHI2NU': 'reduced χ²',
+                'FORCED': 'forced to the anchor kinematics (1 = yes)', 'QFLAG': 'quality flags (bits)'}
         if m.group(3):
-            return f'{g} component {m.group(3)} ' + ('velocity [km/s]' if m.group(4) == 'V' else 'σ_int [km/s]')
+            return f'{g} component {m.group(3)} ' + {'V': 'velocity [km/s]', 'SIG': 'σ_int [km/s]',
+                                                     'FRAC': 'flux fraction'}[m.group(4)]
         return f'{g} {what[m.group(2)]}'
-    m = re.match(r'^(HA|HB|OIII5007|OIII4959|NII6583|NII6548|SII6716|SII6731)_C(\d)_FLUX$', n)
+    m = re.match(rf'^({_LINE_RE})_C(\d)_FLUX$', n)
     if m:
         return f'{LINE_LABELS.get(_PIPE_LINES[m.group(1)], m.group(1))} component {m.group(2)} flux'
+    m = re.match(rf'^({_LINE_RE})_FLUX_CGS$', n)
+    if m:
+        return f'{LINE_LABELS.get(_PIPE_LINES[m.group(1)], m.group(1))} flux [10⁻¹⁷ erg/s/cm²]'
     return None
 
 
@@ -213,9 +232,10 @@ def _pretty(name):
 def is_velocity_map(name):
     n = name.upper()
     return (n in ('V', 'V_MODEL', 'KIN_V_HA', 'KIN_V_MODEL', 'KIN_V_RESID') or '_DV' in n
-            or bool(re.match(r'^(HA|HB|OIII|SII)_(V50|V10|V90|C\d_V)$', n)))
+            or bool(re.match(rf'^({_GROUP_RE})_(V50|V10|V90|C\d_V)$', n)))
 
 
 def is_integer_map(name):
     n = name.upper()
-    return n in ('BINMAP', 'KINBINMAP', 'BIN_CLASS_N2') or n.endswith('_FORCED') or n.endswith('_NCOMP')
+    return (n in ('BINMAP', 'KINBINMAP', 'BIN_CLASS_N2') or n.endswith('_FORCED') or n.endswith('_NCOMP')
+            or n.endswith('_QFLAG'))
