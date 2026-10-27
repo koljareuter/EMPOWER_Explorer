@@ -291,11 +291,12 @@ def _pipe_defaults(names, anchor):
 
 
 def _flux_base_unit(prod):
-    """Cube unit of a product ('ADU/s'); Voronoi-fit headers give the flux unit '<unit> um'."""
+    """Cube unit of a product ('ADU/s'); Voronoi-fit headers give the flux unit '<unit> um'
+    (FITS form 'adu s-1 um' since pipeline 2.1)."""
     u = prod.bunit
     if prod.is_pipeline and u.endswith(' um'):
         u = u[:-3]
-    return u.replace('/sec', '/s')
+    return u.replace('/sec', '/s').replace('adu s-1', 'ADU/s')
 
 
 def _config_from(d):
@@ -321,18 +322,23 @@ def _rows_of(df):
 
 def _load_product_data(prod):
     """Worker: {'maps'} of a MapProduct; Voronoi fits also 'rows' {bin: BINS row}, 'total' (TOTAL row
-    or None), 'cfg' (vb.Config), 'noise' {band: noise model}, 'rest' {line: micron} (vb.read_product).
-    'cfg' stays None for products of another schema (their columns differ): no spectra then."""
-    out = {'maps': prod.load()}
+    or None), 'cfg' (vb.Config), 'noise' {band: noise model}, 'rest' {line: micron}, 'clipped'
+    {(bin, group tag): wavelengths} and 'header' - all read now from the file (vb.read_product), so a
+    product rewritten after the catalogue was built is shown consistently.  'cfg' stays None for
+    products of another schema (their columns differ): no spectra then."""
+    out = {'maps': prod.load(), 'header': dict(prod.meta)}
     if not prod.is_pipeline:
         return out
-    if vb is not None and prod.schema == vb.SCHEMA:
-        P = vb.read_product(prod.path)
+    P = vb.read_product(prod.path) if vb is not None else None
+    if P is not None and str(P['header'].get('SCHEMA', '')).strip() == vb.SCHEMA:
+        prod._maps.clear()
+        prod._maps.update(P['maps'])
+        prod.meta.update({k: v for k, v in P['header'].items() if isinstance(v, (str, int, float, bool))})
         tot = _rows_of(P['total'])
-        out.update(rows=_rows_of(P['bins']), total=tot.get(-1), cfg=P['config'] or vb.Config(),
-                   noise=P['noise'], rest=P['rest'])
+        out.update(maps=prod._maps, header=P['header'], rows=_rows_of(P['bins']), total=tot.get(-1),
+                   cfg=P['config'] or vb.Config(), noise=P['noise'], rest=P['rest'], clipped=P['clipped'])
     else:
-        out.update(rows=_rows_of(prod.bins_table()), total=None, cfg=None, noise={}, rest=None)
+        out.update(rows=_rows_of(prod.bins_table()), total=None, cfg=None, noise={}, rest=None, clipped={})
     return out
 
 
@@ -384,8 +390,7 @@ def _compute_bin(res, req):
     residuals reproduce its chi2_nu (up to clipped pixels).  No refit."""
     st, cfg, g, z = req['stack'], req['cfg'], res.group, req['z_ref']
     nz = req['noise']
-    noise = vb.BandNoise(sd1=np.asarray(nz['sd1'], float), bg=np.asarray(nz['bg'], float), ncorr=nz['ncorr'],
-                         err_scale=float(nz['err_scale']))
+    noise = vb.noise_from_product(nz)
     with np.errstate(all='ignore'):
         spec, err = vb.region_spectrum(st.cube, req['sel'], noise, cfg.edge_margin)
     wave = np.asarray(st.wave, float)
@@ -417,6 +422,9 @@ def _compute_bin(res, req):
                 inside = (res.wave >= flo) & (res.wave <= fhi) & (res.err > 0)
                 res.chi = np.where(inside, (res.spec - model) / res.err, np.nan)
             res.used = np.isin(res.wave, gd.x) & np.isfinite(res.chi)
+            clipped = req.get('clipped')
+            if clipped is not None and len(clipped):       # pixels the pipeline clipped before its fit
+                res.used &= ~np.isin(res.wave, clipped)
     return res
 
 
@@ -1269,7 +1277,7 @@ class MapsTab(QWidget):
         """Map set of a Voronoi-pipeline product: maps on the anchor-band grid; the bins on
         the grids of the other bands (BINMAP_<band>, not listed), the BINS rows and the fit config
         go to ms.pipe."""
-        meta, base = prod.meta, os.path.basename(prod.path)
+        meta, base = data.get('header') or prod.meta, os.path.basename(prod.path)
         anchor = str(meta.get('ANCHOR') or 'ha').strip()
         anchor = anchor if anchor in GROUPS else 'ha'
         aband = self._product_band(prod)
@@ -1278,6 +1286,8 @@ class MapsTab(QWidget):
             a = np.asarray(a)
             if n.startswith('BINMAP_'):
                 band_bms[n[len('BINMAP_'):]] = a.astype(np.int64)
+                continue
+            if n.startswith('RELNOISE_'):                     # part of the noise model, not a map
                 continue
             if n == 'BINMAP':
                 binmaps[n] = a.astype(np.int64)
@@ -1304,6 +1314,7 @@ class MapsTab(QWidget):
                        err_scale={k[len('ERRSC_'):]: _num(v, 1.0) for k, v in meta.items() if k.startswith('ERRSC_')},
                        anchor_snr=f'{_ltag(main)}_SNR', noise=data.get('noise') or {}, rest=data.get('rest'),
                        total=data.get('total'), status=str(meta.get('STATUS') or '').strip(),
+                       clipped=data.get('clipped') or {},
                        centre=(int(_num(meta.get('CENTY'), -1)), int(_num(meta.get('CENTX'), -1))))
         st = self.state.stacks.get(aband)
         ny, nx = ms.shape if ms.shape else (0, 0)
@@ -1432,6 +1443,7 @@ class MapsTab(QWidget):
         cfg = vb.Config(max_components=int(self.vcomp_spin.value()), target_sn=target,
                         target_fallback=tuple(t for t in vb.Config().target_fallback if t < target))
         vb.sync_rest(engine.REST_UM, engine.BAND_RESOLUTION)
+        vb.sync_sky(engine.ROOT)                 # OH lines for the sky-residual guard
         self._synced_root = engine.ROOT
         path = self._vfit_path()
         zr = st.redshift
@@ -2024,7 +2036,8 @@ class MapsTab(QWidget):
             res.message = (f'No noise model for {band}',
                            f'The product has no NOISE_{band} table matching the {band} stack.')
             return None, res, None
-        req = dict(stack=st, cfg=P['cfg'], sel=sel, z_ref=z, noise=nz, rest=P['rest'])
+        req = dict(stack=st, cfg=P['cfg'], sel=sel, z_ref=z, noise=nz, rest=P['rest'],
+                   clipped=P['clipped'].get((bin_id, G)) if bin_id >= 0 else None)
         ckey = ('bin', P['token'], bin_id if bin_id >= 0 else ('spaxel', x, y), g, band)
         return ckey, res, (req,)
 
@@ -2401,7 +2414,7 @@ class MapsTab(QWidget):
             rows.append(comp)
             for k in range(1, ncomp + 1):
                 ccol = COMP_COLORS[(k - 1) % len(COMP_COLORS)] if ncomp > 1 else col
-                frac = _num(r.get(f'{G}_C{k}_FRAC'))
+                frac = _num(r.get(f'{G}_C{k}_MFRAC' if forced else f'{G}_C{k}_FRAC'))
                 if forced:      # template (model) kinematics: not a measurement of this group
                     kv = (f'template v {_fkms(r.get(f"{G}_C{k}_MV"), signed=True)} · '
                           f'σ<sub>int</sub> {_fkms(r.get(f"{G}_C{k}_MSIG"))} km/s')

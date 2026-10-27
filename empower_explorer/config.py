@@ -11,10 +11,10 @@ from pathlib import Path
 
 from empower_explorer import APP_NAME, ORG_NAME
 
-# Combined-cube reductions, newest first: (folder name, label shown in the app)
+# Combined-cube reductions, the default first: (folder name, label shown in the app)
 KNOWN_VARIANTS = [
-    ('kmos_comb_ohlin_tell_v2', 'OH-linear + telluric v2'),
     ('kmos_comb_hyb_tell', 'Hybrid + telluric'),
+    ('kmos_comb_ohlin_tell_v2', 'OH-linear + telluric v2'),
     ('kmos_comb_ohlin_tell', 'OH-linear + telluric'),
     ('kmos_comb_ohlin', 'OH-linear'),
     ('kmos_comb_hyb', 'Hybrid'),
@@ -23,7 +23,7 @@ KNOWN_VARIANTS = [
     ('kmos_comb_zapfix', 'ZAP fix'),
     ('kmos_proc_and_comb_server', 'Server (old)'),
 ]
-DEFAULT_VARIANT = 'kmos_comb_ohlin_tell_v2'     # the reduction the notebooks use (2026-10-25)
+DEFAULT_VARIANT = 'kmos_comb_hyb_tell'     # the reduction the maps are made from (2026-10-27)
 
 # CSV result tables of the EMPOWER notebooks (file name -> short name used in the app)
 TABLES = {

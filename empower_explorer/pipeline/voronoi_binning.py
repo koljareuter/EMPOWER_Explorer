@@ -20,14 +20,28 @@ What it does
   * one set of bins for all bands: bins are made on the anchor band (Ha, else [OIII], else Hb) and
     carried to the other bands through the WCS (sub-pixel sampling), so ratios across bands use the
     same sky area; ratios across bands use the cubes' FLUXK calibration
-  * galaxy region = footprint interior (outer dither frame removed) connected to the centre; a
+  * galaxy region = footprint interior (outer 1-px frame and spaxels noisier than 1.7x the median
+    spaxel removed) connected to the centre; a
     galaxy without detection is fitted in one central aperture and flagged, never mapped from edge
     artefacts
-  * noise = robust scatter of the sky spaxels (galaxy and frame excluded) x c(N), calibrated per
-    band with null tests BEFORE the bin fits, so every decision uses calibrated S/N
-  * residual background subtracted: a smooth pedestal (running median of the sky spaxels, bridged
-    across +-1000 km/s of every emission line) plus significant sharp sky residuals outside the lines
-  * fit, clip (single-pixel spikes; > 5 sigma outliers away from the lines), refit
+  * detection (DETECT, STATUS): the anchor line fitted (free, clipped) in the central aperture or the
+    whole region with calibrated errors must reach S/N >= 5 after dividing by max(1, NULLDET / 3),
+    where NULLDET is the largest S/N of the same fit at line-free wavelengths of the same spectrum
+    (look-elsewhere effect, continuum structure, sky residuals), and its narrowest component must have
+    sigma <= 250 km/s; undetected galaxies get one central aperture with forced fits (upper limits)
+  * noise = robust scatter of the sky spaxels (galaxy and frame excluded; if fewer than 30 remain,
+    all spaxels >= 6 px from the centre) x the relative noise r of every spaxel (its own pixel-to-
+    pixel scatter: field edges with fewer exposures are 2-3x noisier than the centre) x c(N), calibrated per band with null tests BEFORE the bin
+    fits as a function of region size (bins, sky boxes when there are few bins, and the TOTAL
+    spectrum: NOISE_<band> ERRSCN), and in the anchor band already before the detection.  The galaxy
+    region (S/N >= 1) and the Voronoi target S/N use the uncalibrated sky noise, as the notebooks do
+    (TARGETSN is nominal); every fit decision uses calibrated errors
+  * residual background subtracted: a smooth pedestal (running median of the sky spaxels without the
+    +-1000 km/s around every emission line, then interpolated across them); its uncertainty enters the
+    continuum and EW errors
+  * fit, clip (single-pixel spikes; > 5 sigma outliers away from the lines), refit; a free component
+    that is unresolved (sigma < 0.5 sigma_LSF) on a bright OH line (scripts/sky_lines_uves_oliva.csv)
+    is a sky residual and rejected
   * forced bins carry NO kinematics in the maps (the template is kept as *_TPL_*); weak outer bins
     are forced to the interpolated velocity field of the detected bins, not to v = 0
 
@@ -39,9 +53,11 @@ Library (no Qt):
     from empower_explorer.pipeline import voronoi_binning as vb
     prod = vb.run_galaxy(stacks, z, vb.Config(), name='COSMOS 92754')   # stacks: {band: BandStack}
     vb.write_product(prod, path)
-    p = vb.read_product(path)      # dict: maps, bins, total, header, config, lines, noise
+    p = vb.read_product(path)      # dict: maps, bins, total, header, config, lines, rest, noise, clipped
     wave, spec, err = vb.product_bin_spectrum(p, stack, band, bin_id)   # exactly what was fitted
-    total, parts = vb.model_curve(row, 'ha', wave, p['header']['Z_REF'], components=True)
+    total, parts = vb.model_curve(row, 'ha', wave, p['header']['Z_REF'], components=True, rest=p['rest'],
+                                  resolving_power=p['noise'][band]['resolving_power'])
+    used = vb.used_pixels(p, wave, bin_id, 'ha') & np.isfinite(spec) & (err > 0)   # pixels of the final fit
 
 Command line (all galaxies of a reduction, in parallel):
     python -m empower_explorer.pipeline.voronoi_binning --all
@@ -55,11 +71,15 @@ Naming (schema EMPOWER-VORONOI-2; unique ignoring case; map EXTNAMEs = BINS colu
           <G>_BAND _NCOMP _FORCED _CHI2NU _DBIC_NCOMP _DBIC_FREE _NCLIP _QFLAG _X0 _CONT_A _CONT_B
           _CONT_MAIN _CONT_MAIN_ERR _V50 _W80 _V10 _V90 _TPL_V _TPL_SIG
           _C<k>_V _VERR _SIG _SIGERR _FRAC _UNRES (published, NaN for forced or weak fits)
-          _C<k>_MV _MSIG (model parameters, also for forced fits: model_curve uses them)
-  ratios  LOG_N2 LOG_O3 LOG_S2 LOG_O3N2 (+ _ERR), LOG_O3_XBAND, SII_RATIO, NE_SII, OH_N2_M13, EW_HA
-Units: fluxes in BUNIT x micron (ADU/s um; the models rebuild in these units); *_FLUX_CGS in
-1e-17 erg/s/cm2 via the band's FLUXK (about 10 % absolute).  Velocities relative to Z_REF [km/s];
-sigma intrinsic (LSF removed).
+          _C<k>_MV _MSIG _MFRAC (model parameters, also for forced fits: model_curve uses them)
+  ratios  LOG_N2 LOG_O3 LOG_S2 LOG_O3N2 (+ _ERR, from the fit covariance; + _XBAND: 1 across bands,
+          0 one band, -1 undefined), SII_RATIO (+ _ERR), NE_SII, OH_N2_M13, EW_HA (+ _ERR)
+  tables  BINS, TOTAL (sum of all bins), CLIPPED (BIN, GROUP, BAND, WAVE of every clipped pixel), LINES,
+          CONFIG, NOISE_<band>; every column carries TUNITn
+Units (FITS): fluxes 'adu s-1 um' (cube unit x micron; the models rebuild in these units); *_FLUX_CGS
+'10**(-17) erg s-1 cm-2' via the band's FLUXK (about 10 % absolute).  Velocities 'km s-1' relative to
+Z_REF; sigma intrinsic (LSF removed).  Pixel coordinates 0-based.  Provenance: PIPEVER, CODEHASH
+(sha256 of this file), GITHASH, package versions, input cubes (HISTORY).
 """
 import argparse
 import datetime
@@ -77,7 +97,7 @@ from scipy.ndimage import binary_dilation, binary_erosion, binary_opening, label
 from scipy.optimize import least_squares, lsq_linear
 
 SCHEMA = 'EMPOWER-VORONOI-2'
-PIPELINE_VERSION = '2.0.0'
+PIPELINE_VERSION = '2.5.0'        # bump on every change of behaviour (CODEHASH identifies the exact code)
 C_KMS = 299792.458
 MAD2STD = 1.4826
 FWHM_W80 = 2.5631          # W80 of a Gaussian in units of sigma
@@ -100,6 +120,7 @@ GROUPS = {
     'sii':  dict(tag='SII', label='[SII]', lines=['SII6716', 'SII6731'], main='SII6716', ties={}),
 }
 ANCHORS = ('ha', 'oiii', 'hb')
+LINE_GROUP = {k: g for g, d in GROUPS.items() for k in d['lines']}
 SII_RANGE = (0.4375, 1.4484)        # [SII] 6716/6731 between the high- and the low-density limit
 
 # <G>_QFLAG bits
@@ -107,6 +128,8 @@ QF_CHI2 = 1             # reduced chi2 above Config.chi2nu_max
 QF_CLIPPED = 2          # pixels clipped before the final fit
 QF_UNRESOLVED = 4       # a free component narrower than 5 % of the LSF (its sigma error is NaN)
 QF_SII_BOUND = 8        # [SII] ratio pinned to a physical limit
+QF_BROAD = 16           # free fits rejected because the line is broader than allowed: forced flux is a lower limit
+QF_PARTIAL = 32         # a line of the group is not covered (masked / band edge): left out of the model
 
 
 def group_tag(group):
@@ -127,6 +150,7 @@ class Config:
     min_sn: float = 1.0
     grid: int = 3
     frame: int = 1                  # px of the footprint edge not used (noisy dither frame)
+    rel_max: float = 1.7            # spaxels noisier than this x the median spaxel are not used
     max_offset: float = 4.0         # px: centre peak / galaxy region must lie this close to the centre
     # fit
     groups: tuple = ('hb', 'oiii', 'ha', 'sii')
@@ -142,13 +166,17 @@ class Config:
     min_cover: float = 0.6
     force_below: float = 5.0
     det_null_ref: float = 3.0       # detection: S/N / max(1, max line-free-window S/N / det_null_ref) >= force_below
+    sig_det_max: float = 250.0      # detection: narrowest component sigma_int <= this [km/s]
+    ref_recentre: float = 100.0     # km/s: recentre Z_REF on the bins if their median velocity is further off
     kin_snr_min: float = 5.0
     ratio_snr_min: float = 3.0
     sig_default: float = 80.0
     chi2nu_max: float = 3.0
     clip_sigma: float = 5.0
+    sky_guard: bool = True          # reject free components unresolved (< 0.5 sigma_LSF) on a bright OH line
     # noise / background
     noise_rmin: float = 6.0
+    min_sky: int = 30               # fewer sky spaxels left after excluding the galaxy: sigma_1, c(N) from all
     min_finite: float = 0.5
     edge_margin: int = 4
     bg_subtract: bool = True
@@ -156,7 +184,7 @@ class Config:
     bg_window: int = 41
     null_test: bool = True
     null_min: int = 20
-    err_scale_range: tuple = (0.6, 3.0)
+    err_scale_range: tuple = (0.5, 5.0)
     null_offsets: tuple = (-6000.0, -5200.0, -4400.0, 3600.0, 4400.0, 5200.0)
     centre_aperture: float = 2.5
 
@@ -199,6 +227,36 @@ def sync_rest(rest_um=None, band_resolution=None):
         REST.update({k: float(v) for k, v in rest_um.items()})
     if band_resolution:
         BAND_RESOLUTION.update(band_resolution)
+
+
+SKY_UM = np.zeros(0)     # vacuum wavelengths [micron] of the bright OH sky lines (sync_sky)
+
+
+def sync_sky(root, keep_fraction=0.3):
+    """Load the bright OH sky lines from <root>/scripts/sky_lines_uves_oliva.csv (the brightest
+    keep_fraction of each catalogue, air -> vacuum).  Without them the sky-residual guard is off."""
+    global SKY_UM
+    path = os.path.join(root, 'scripts', 'sky_lines_uves_oliva.csv') if root else ''
+    try:
+        import pandas as pd
+        df = pd.read_csv(path)
+    except Exception:
+        SKY_UM = np.zeros(0)
+        return SKY_UM
+    lam = pd.to_numeric(df['lambda_A'], errors='coerce').to_numpy(float) * 1e-4
+    flux = pd.to_numeric(df['flux'], errors='coerce').to_numpy(float)
+    air = df['medium'].astype(str).str.lower().eq('air').to_numpy()
+    with np.errstate(all='ignore'):
+        s2 = (1.0 / lam) ** 2
+        lam = np.where(air, lam * (1 + 0.0000834254 + 0.02406147 / (130 - s2) + 0.00015998 / (38.9 - s2)), lam)
+    src = df['source'].astype(str).to_numpy()
+    keep = np.zeros(len(df), bool)
+    for c in np.unique(src):
+        sel = (src == c) & np.isfinite(lam) & np.isfinite(flux)
+        if sel.sum() >= 5:
+            keep[sel] = flux[sel] >= np.nanpercentile(flux[sel], 100 * (1 - keep_fraction))
+    SKY_UM = np.sort(lam[keep])
+    return SKY_UM
 
 
 # ======================================================================== noise, background, spectra
@@ -250,6 +308,29 @@ def running_nanmedian(x, window):
                                                 2 * half + 1), axis=1)
 
 
+def relative_noise(cube, wave, z, fp, window=15):
+    """r(y, x): robust pixel-to-pixel scatter of every spaxel (high-pass along wavelength, +-1500
+    km/s around the lines masked) relative to the median spaxel of the footprint.  Spaxels at the
+    field edge, covered by fewer exposures, are 2-3x noisier than the centre; a single sigma_1 for
+    all spaxels would make edge residuals look like lines.  NaN outside the footprint."""
+    from scipy.ndimage import median_filter
+    with np.errstate(all='ignore'), warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        med = np.nanmedian(cube, axis=0)
+        filled = np.where(np.isfinite(cube), cube, med[None])
+        hp = cube - median_filter(np.nan_to_num(filled), size=(window, 1, 1), mode='nearest')
+        hp[_line_mask(wave, z, 1500.0)] = np.nan
+        s = MAD2STD * np.nanmedian(np.abs(hp - np.nanmedian(hp, axis=0)), axis=0)
+        s[np.isfinite(hp).sum(0) < 50] = np.nan
+        good = fp & np.isfinite(s) & (s > 0)
+        ref = np.nanmedian(s[good]) if good.any() else np.nan
+    if not (np.isfinite(ref) and ref > 0):
+        return np.where(fp, 1.0, np.nan)
+    r = np.clip(s / ref, 0.3, 10.0)
+    r = np.where(np.isfinite(r), r, np.nanmax(r) if np.isfinite(r).any() else 1.0)
+    return np.where(fp, r, np.nan)
+
+
 def spaxel_noise(cube, sky, floor=0.5, window=51, dead=0.2):
     """Per-wavelength 1-sigma noise of ONE spaxel: robust scatter of the sky spaxels.
     NaN (pixel not used) where fewer than half of the sky spaxels (or < 8) have data, or where the
@@ -275,41 +356,41 @@ def _line_mask(wave, z, kms):
     return near
 
 
-def background_spectrum(cube, wave, sky, sd1, z, cfg):
-    """Residual background per wavelength and spaxel: a smooth pedestal (running median over
-    bg_window px of the sky-spaxel median, bridged across +-bg_line_kms of every emission line)
-    plus the sharp sky residuals that are significant (> 3 sigma of that median) away from the lines.
-    Near the lines only the smooth part is used, so no galaxy line flux can be removed."""
+def background_spectrum(cube, wave, sky, sd1, z, cfg, c_sky=1.0):
+    """Residual background per wavelength and spaxel and its 1-sigma uncertainty: a smooth pedestal
+    = running median over bg_window px of the sky-spaxel median, computed WITHOUT the pixels within
+    +-bg_line_kms of any emission line and then interpolated (smoothed values) across those zones and
+    held constant to the band edges - no galaxy line flux can be removed and no single pixel sets it.
+    (bg, bg_err); bg_err ~ 1.25 sigma_1 c / sqrt(n_sky x bg_window / 2)."""
     with np.errstate(all='ignore'), warnings.catch_warnings():
         warnings.simplefilter('ignore')
         sub = cube[:, sky]
         raw = np.nanmedian(sub, axis=1)
         nval = np.isfinite(sub).sum(1)
+    zeros = np.zeros_like(wave, dtype=float)
     near = _line_mask(wave, z, cfg.bg_line_kms)
     ok = np.isfinite(raw) & np.isfinite(sd1) & ~near
     if ok.sum() < cfg.bg_window:
-        return np.zeros_like(wave, dtype=float)
+        return zeros, zeros
     idx = np.arange(wave.size)
-    lo, hi = idx[ok][0], idx[ok][-1]
-    base = np.where((idx >= lo) & (idx <= hi), np.interp(idx, idx[ok], raw[ok]), np.nan)
-    smooth = running_nanmedian(base, cfg.bg_window)
-    fin = np.isfinite(smooth)                       # constant up to the band edges (no step at a line)
-    smooth = np.interp(idx, idx[fin], smooth[fin])
+    smooth = running_nanmedian(np.where(ok, raw, np.nan), cfg.bg_window)
+    fin = np.isfinite(smooth) & ok
+    smooth = np.interp(idx, idx[fin], smooth[fin])          # bridged with smoothed values
     with np.errstate(all='ignore'):
-        sig = 1.2533 * sd1 / np.sqrt(np.maximum(nval, 1))
-        hit = ok & (np.abs(raw - smooth) > 3 * sig)
-    hit = binary_dilation(hit, iterations=1) & ok
-    bg = smooth + np.where(hit, raw - smooth, 0.0)
-    return np.where(np.isfinite(bg), bg, 0.0)
+        sd_s = np.interp(idx, idx[np.isfinite(sd1)], running_nanmedian(sd1, cfg.bg_window)[np.isfinite(sd1)])
+        bg_err = 1.2533 * sd_s * c_sky / np.sqrt(np.maximum(np.nanmedian(nval[ok]), 1) * cfg.bg_window / 2)
+    return np.where(np.isfinite(smooth), smooth, 0.0), np.where(np.isfinite(bg_err), bg_err, 0.0)
 
 
-def noise_correlation(cube, sd1, sky, sizes=(1, 2, 3, 4), min_boxes=15):
+def noise_correlation(cube, sd1, sky, sizes=(1, 2, 3, 4), min_boxes=15, rel=None):
     """[(n spaxels, noise excess c, n boxes)]: robust scatter of k x k box sums of sky spaxels
-    divided by k * sigma_1 (1 = uncorrelated; the resampled cubes give c(9) ~ 1.3-1.8)."""
+    divided by their expected uncorrelated noise sigma_1 sqrt(sum r^2) (1 = uncorrelated; the
+    resampled cubes give c(9) ~ 1.3-1.8).  rel: relative noise map r (None: all 1)."""
     nz, ny, nx = cube.shape
+    rel = np.ones((ny, nx)) if rel is None else np.nan_to_num(rel, nan=1.0)
     out = []
     for k in sizes:
-        boxes = [cube[:, y:y + k, x:x + k].reshape(nz, -1).sum(1)
+        boxes = [cube[:, y:y + k, x:x + k].reshape(nz, -1).sum(1) / np.sqrt(np.sum(rel[y:y + k, x:x + k] ** 2))
                  for y in range(ny - k + 1) for x in range(nx - k + 1) if sky[y:y + k, x:x + k].all()]
         if len(boxes) < min_boxes:
             continue
@@ -317,7 +398,7 @@ def noise_correlation(cube, sd1, sky, sizes=(1, 2, 3, 4), min_boxes=15):
         with np.errstate(all='ignore'), warnings.catch_warnings():
             warnings.simplefilter('ignore')
             sd = MAD2STD * np.nanmedian(np.abs(B - np.nanmedian(B, 0)), 0)
-            ratio = sd / (k * sd1)
+            ratio = sd / sd1
         out.append((k * k, float(np.nanmedian(ratio)), len(boxes)))
     return out
 
@@ -329,36 +410,76 @@ def corr_factor(ncorr, n):
     return float(np.interp(np.log10(max(n, 1)), np.log10(nn), rr))
 
 
+NCORR_DEFAULT = [(4, 1.2, 0), (9, 1.45, 0), (16, 1.6, 0)]    # typical c(N) of the cubes, if not measurable
+
+
 @dataclass
 class BandNoise:
     sd1: np.ndarray                 # 1-sigma noise of one spaxel per wavelength
     bg: np.ndarray                  # residual background per spaxel and wavelength
     ncorr: list                     # [(n, c(n), n boxes)]
-    err_scale: float = 1.0          # null-test calibration
+    err_scale: float = 1.0          # null-test calibration (all sizes together)
     n_null: int = 0
     null_nmad: float = np.nan
     n_sky: int = 0
     sky: object = None              # (ny, nx) bool sky spaxels the model was measured on
+    scale_n: list = field(default_factory=list)   # [(N spaxels, err scale)] null tests by region size
+    bg_err: object = None           # 1-sigma uncertainty of bg per spaxel and wavelength
+    sky_src: str = 'sky'            # 'sky' (galaxy excluded) or 'all' (too few sky spaxels left)
+    ncorr_src: str = 'sky'          # 'sky', 'all' or 'default'
+    rel: object = None              # (ny, nx) relative noise r of every spaxel (sigma_1 is for r = 1)
+
+    def scale(self, n):
+        """Error scale of an n-spaxel region: interpolated in log N between the null-test size
+        classes (constant beyond them); the overall err_scale without such a table."""
+        if not self.scale_n:
+            return self.err_scale
+        nn = np.log10([max(a, 1) for a, _ in self.scale_n])
+        return float(np.interp(np.log10(max(n, 1)), nn, [s for _, s in self.scale_n]))
 
 
 def region_spectrum(cube, sel, noise, edge_margin=4):
     """Background-subtracted sum spectrum of the spaxels `sel` and its 1-sigma error
-    sigma_1 sqrt(n) c(N) x err_scale (noise: BandNoise)."""
+    sigma_1 sqrt(sum of r^2 over the valid spaxels) c(N) x scale(N) (noise: BandNoise; r = 1 for all
+    spaxels when it has no relative noise map)."""
     patch = cube[:, sel]
     valid = erode_valid(np.isfinite(patch), edge_margin)
     n = valid.sum(1)
+    npix = int(np.sum(sel))
     spec = np.where(n > 0, np.nansum(np.where(valid, patch, 0.0), 1) - noise.bg * n, np.nan)
-    err = noise.sd1 * np.sqrt(np.maximum(n, 1)) * corr_factor(noise.ncorr, int(np.sum(sel))) * noise.err_scale
+    if noise.rel is not None and noise.rel.shape == sel.shape:
+        w = np.sqrt(valid.astype(float) @ (np.nan_to_num(noise.rel[sel], nan=1.0) ** 2))
+    else:
+        w = np.sqrt(np.maximum(n, 1))
+    err = noise.sd1 * np.where(n > 0, w, 1.0) * corr_factor(noise.ncorr, npix) * noise.scale(npix)
     return spec, np.where(n > 0, err, np.nan)
 
 
-def band_noise(st, fp, centre, exclude, z, cfg):
-    """Noise model of one band: sky spaxels, sigma_1, background, c(N)."""
-    sky = sky_mask(st.cube.shape[1:], fp, centre, cfg, exclude)
-    sd1 = spaxel_noise(st.cube, sky)
-    bg = background_spectrum(st.cube, st.wave, sky, sd1, z, cfg) if cfg.bg_subtract \
-        else np.zeros_like(st.wave, dtype=float)
-    return BandNoise(sd1=sd1, bg=bg, ncorr=noise_correlation(st.cube, sd1, sky), n_sky=int(sky.sum()), sky=sky)
+def band_noise(st, fp, centre, exclude, z, cfg, rel=None):
+    """Noise model of one band: relative noise map r of the spaxels, sky spaxels (galaxy excluded;
+    if fewer than min_sky remain, sigma_1 and c(N) come from all spaxels >= noise_rmin from the
+    centre), sigma_1 (of an r = 1 spaxel), c(N), background."""
+    shape = st.cube.shape[1:]
+    rel = relative_noise(st.cube, st.wave, z, fp) if rel is None else rel
+    sky = sky_mask(shape, fp, centre, cfg, exclude)
+    sky_n, src = sky, 'sky'
+    if exclude is not None and sky.sum() < cfg.min_sky:
+        sky_n, src = sky_mask(shape, fp, centre, cfg, None), 'all'
+    with np.errstate(all='ignore'):
+        sd1 = spaxel_noise(st.cube / np.nan_to_num(rel, nan=1.0)[None], sky_n)
+    ncorr, nsrc = noise_correlation(st.cube, sd1, sky_n, rel=rel), src
+    if not any(o[0] > 1 for o in ncorr) and src == 'sky' and exclude is not None:
+        ncorr, nsrc = noise_correlation(st.cube, sd1, sky_mask(shape, fp, centre, cfg, None), rel=rel), 'all'
+    if not any(o[0] > 1 for o in ncorr):
+        ncorr, nsrc = list(NCORR_DEFAULT), 'default'
+    if cfg.bg_subtract:
+        r_sky = float(np.sqrt(np.nanmean(rel[sky] ** 2))) if sky.any() else 1.0
+        bg, bg_err = background_spectrum(st.cube, st.wave, sky, sd1 * r_sky, z, cfg,
+                                         corr_factor(ncorr, int(sky.sum())))
+    else:
+        bg = bg_err = np.zeros_like(st.wave, dtype=float)
+    return BandNoise(sd1=sd1, bg=bg, ncorr=ncorr, n_sky=int(sky_n.sum()), sky=sky_n, bg_err=bg_err,
+                     sky_src=src, ncorr_src=nsrc, rel=rel)
 
 
 def sigma_lsf_kms(band, resolving_power=None):
@@ -413,6 +534,7 @@ class GroupData:
         self.main = g['main']
         self.lsf = sigma_lsf_kms(band)
         self.nclip = 0
+        self.clipped_x = np.zeros(0)          # wavelengths of the pixels clipped before the fit
         good = np.isfinite(spec) & np.isfinite(err) & (err > 0)
         cov = []
         for k in g['lines']:
@@ -420,23 +542,37 @@ class GroupData:
             core = np.abs(wave - lam) < 3 * lam * self.lsf / C_KMS
             if core.any() and good[core].mean() >= cfg.min_cover:
                 cov.append(k)
-        self.keys = cov
+        # modelled lines: the covered ones plus their doublet partners (a tied line adds no free
+        # parameter, so a partly masked member keeps the tie and is modelled on the pixels there are)
+        model = set(cov)
+        for k, (ref, _) in g['ties'].items():
+            if k in model:
+                model.add(ref)
+        for k, (ref, _) in g['ties'].items():
+            if ref in model:
+                model.add(k)
+        self.keys = [k for k in g['lines'] if k in model]
+        self.partial = len(cov) < len(g['lines'])
         self.ok = self.main in cov
         if not self.ok:
             return
-        lo = min(REST[k] for k in cov) - cfg.win_pad
-        hi = max(REST[k] for k in cov) + cfg.win_pad
+        lo = min(REST[k] for k in self.keys) - cfg.win_pad
+        hi = max(REST[k] for k in self.keys) + cfg.win_pad
         sel = good & (wave > lo * (1 + z)) & (wave < hi * (1 + z))
+        for k in g['lines']:               # an unmodelled (uncovered free) line must not sit in the window
+            if k not in model:
+                lam = REST[k] * (1 + z)
+                sel &= np.abs(wave - lam) > (3 * np.hypot(self.lsf, cfg.sig_default) + cfg.dv_tie) * lam / C_KMS
         self.x, self.y, self.e = wave[sel], spec[sel], err[sel]
         self.x0 = float(np.mean(self.x)) if self.x.size else np.nan
-        # continuum on both sides of the lines is needed for an honest fit
+        # continuum on both sides of the covered lines is needed for an honest fit
         lam_lo, lam_hi = min(REST[k] for k in cov) * (1 + z), max(REST[k] for k in cov) * (1 + z)
         side = 3 * lam_hi * self.lsf / C_KMS
         self.ok = bool(self.x.size >= 8 and (self.x < lam_lo - side).sum() >= 3
                        and (self.x > lam_hi + side).sum() >= 3)
-        self.lam = {k: REST[k] * (1 + z) for k in cov}
-        ties = {k: v for k, v in g['ties'].items() if k in cov and v[0] in cov}
-        ties.update({k: v for k, v in (extra_ties or {}).items() if k in cov and v[0] in cov})
+        self.lam = {k: REST[k] * (1 + z) for k in self.keys}
+        ties = {k: v for k, v in g['ties'].items() if k in self.keys and v[0] in self.keys}
+        ties.update({k: v for k, v in (extra_ties or {}).items() if k in self.keys and v[0] in self.keys})
         self._set_ties(ties)
 
     def _set_ties(self, ties):
@@ -454,6 +590,7 @@ class GroupData:
         new = self._copy()
         new.x, new.y, new.e = self.x[keep], self.y[keep], self.e[keep]
         new.nclip = int((~keep).sum()) + self.nclip
+        new.clipped_x = np.concatenate([self.clipped_x, self.x[~keep]])
         return new
 
     def with_ties(self, extra):
@@ -478,6 +615,14 @@ class GroupData:
     def profile(self, line, v, s):
         mu = self.lam[line] * (1 + v / C_KMS)
         return _unit_gauss(self.x, mu, mu * np.hypot(self.lsf, s) / C_KMS)
+
+    def on_sky_line(self, v):
+        """True if a modelled line at velocity v falls within half an LSF FWHM of a bright OH line."""
+        for k in self.keys:
+            mu = self.lam[k] * (1 + v / C_KMS)
+            if np.min(np.abs(SKY_UM - mu)) < 0.5 * 2.3548 * self.lsf * mu / C_KMS:
+                return True
+        return False
 
     def design(self, comps, fracs=None):
         """[1, x - x0, one column per component and free line]; with fracs (forced fit) ONE
@@ -518,7 +663,10 @@ class GroupFit:
     comp_flux_err: dict = field(default_factory=dict)
     flux: dict = field(default_factory=dict)
     flux_err: dict = field(default_factory=dict)
+    flux_cov: dict = field(default_factory=dict)    # (line a, line b) -> covariance of the total fluxes
     fracs: list = field(default_factory=list)
+    clipped: list = field(default_factory=list)     # wavelengths of the clipped pixels
+    fail: str = ''                                  # why a free fit was rejected ('width', 'velocity', 'spike')
 
     @property
     def chi2nu(self):
@@ -569,22 +717,31 @@ def _finish(gd, comps, coef, A, nonlin_jac, chi2, forced, fracs=None, template=(
         ve = float(np.sqrt(C[2 * k, 2 * k])) if C[2 * k, 2 * k] >= 0 else np.nan
         se = float(np.sqrt(var_s)) if (var_s >= 0 and not unres) else np.nan
         gf.comps.append((float(v), ve, float(s), se, unres))
+    gvec = {}                                           # total flux of a line = gvec[line] . parameters
     for f in gd.free:
         for line, r in gd.members[f]:
+            g = np.zeros(npar)
             if fracs is None:
                 ii = [2 + k * nf + gd.free.index(f) for k in range(len(comps))]
                 per = [r * coef[i] for i in ii]
                 per_err = [abs(r) * np.sqrt(cov[i, i]) if cov[i, i] >= 0 else np.nan for i in ii]
-                var = r * r * float(np.sum(cov[np.ix_(ii, ii)]))
+                g[ii] = r
             else:
                 i = 2 + gd.free.index(f)
                 per = [r * coef[i] * w for w in fracs]
                 per_err = [abs(r * w) * np.sqrt(cov[i, i]) if cov[i, i] >= 0 else np.nan for w in fracs]
-                var = r * r * cov[i, i]
+                g[i] = r * float(np.sum(fracs))
+            var = float(g @ cov @ g)
+            gvec[line] = g
             gf.comp_flux[line] = [float(p) for p in per]
             gf.comp_flux_err[line] = [float(p) for p in per_err]
             gf.flux[line] = float(np.sum(per))
             gf.flux_err[line] = float(np.sqrt(var)) if np.isfinite(var) and var >= 0 else np.nan
+    for a in gvec:                                      # covariances (tied lines: fully correlated)
+        for b in gvec:
+            if a < b:
+                gf.flux_cov[(a, b)] = gf.flux_cov[(b, a)] = float(gvec[a] @ cov @ gvec[b])
+    gf.clipped = [float(x) for x in getattr(gd, 'clipped_x', [])]
     main = gf.comp_flux.get(gd.main)
     if main is not None:
         tot = np.sum(main)
@@ -595,6 +752,8 @@ def _finish(gd, comps, coef, A, nonlin_jac, chi2, forced, fracs=None, template=(
         gf.qflag |= QF_CLIPPED
     if any(c[4] for c in gf.comps) and not forced:
         gf.qflag |= QF_UNRESOLVED
+    if getattr(gd, 'partial', False):
+        gf.qflag |= QF_PARTIAL
     return gf
 
 
@@ -633,6 +792,15 @@ def fit_free(gd, ncomp, cfg, v0=0.0, s0=80.0, vlim=None, s_min=0.0):
     dv = min(1.2 * s0, 0.5 * (vhi - vlo))
     if ncomp == 1:
         starts = [[v0, s0], [v0, max(30.0, 0.5 * s0, s_min)], [v0, min(2 * s0, 0.9 * cfg.sig_int_max)]]
+        # chi2(v) on a velocity grid (emission only, linear solves): the two best minima as extra
+        # starts, so a line offset from the expected velocity is not missed (local minima)
+        sg = max(s0, s_min)
+        vg = np.linspace(vlo, vhi, 33)[1:-1]
+        chi = np.array([np.sum(_solve(gd.design([(v, sg)]), gd.y, gd.e, nonneg_from=2)[1] ** 2) for v in vg])
+        mins = [i for i in range(len(vg)) if (i == 0 or chi[i] <= chi[i - 1]) and (i == len(vg) - 1 or chi[i] <= chi[i + 1])]
+        for i in sorted(mins, key=lambda i: chi[i])[:2]:
+            if abs(vg[i] - v0) > 0.5 * (vg[1] - vg[0]):
+                starts.append([vg[i], sg])
     elif ncomp == 2:
         starts = [[v0, 0.8 * s0, v0, 0.7 * s0], [v0, 0.8 * s0, v0 - 0.3 * dv, 250.0],
                   [v0 - dv, 0.7 * s0, v0 + dv, 5.0], [v0 + dv, 0.7 * s0, v0 - dv, 5.0]]
@@ -655,17 +823,19 @@ def fit_free(gd, ncomp, cfg, v0=0.0, s0=80.0, vlim=None, s_min=0.0):
     chi2, res = best
     x = res.x
     tol = 1e-3 * (np.array(ub) - np.array(lb))
-    bad = False
+    fail = ''
     for k in range(ncomp):
         if abs(x[2 * k] - lb[2 * k]) < tol[2 * k] or abs(x[2 * k] - ub[2 * k]) < tol[2 * k]:
-            bad = True                                        # velocity on its limit
+            fail = fail or 'velocity'                         # velocity on its limit
         if abs(x[2 * k + 1] - ub[2 * k + 1]) < tol[2 * k + 1]:
-            bad = True                                        # width on its upper limit
+            fail = fail or 'width'                            # width on its upper limit
     comps = comps_of(x)
-    if ncomp > 1 and any(s < s_extra_min for _, s in comps[1:]):
-        bad = True                                            # an extra component as narrow as a spike
-    if bad:
-        return GroupFit(group=gd.key, band=gd.band, ok=False)
+    if ncomp > 1 and any(s < s_extra_min for _, s in comps):
+        fail = fail or 'spike'                                # a component of a multi-Gaussian fit as narrow as a spike
+    if cfg.sky_guard and SKY_UM.size and any(gd.on_sky_line(v) for v, s in comps if s < 0.5 * gd.lsf):
+        fail = fail or 'sky'                                  # unresolved and on a bright OH line: sky residual
+    if fail:
+        return GroupFit(group=gd.key, band=gd.band, ok=False, fail=fail)
     A = gd.design(comps)
     coef, _ = _solve(A, gd.y, gd.e, nonneg)
     jac = []
@@ -708,7 +878,7 @@ def fit_group_best(gd, cfg, v0=0.0, s0=80.0, vlim=None, s_min=0.0, base=None):
         elif best is not None and best.ncomp == n - 1:
             break
     if best is None:
-        return GroupFit(group=gd.key, band=gd.band, ok=False)
+        return GroupFit(group=gd.key, band=gd.band, ok=False, fail=f1.fail)
     if 1 in fits and best is not fits[1]:
         scale = max(1.0, fits[1].chi2nu)
         best.dbic_ncomp = float((fits[1].chi2 - best.chi2) / scale
@@ -769,24 +939,35 @@ def _sii_bounded(gd, gf, refit):
     return gf
 
 
-def _choose_anchor(gd, cfg, template, allow_free):
+def _broad_flag(forced, free, gd, cfg):
+    """Forced fit used because the free single Gaussian ran into its width limit while the forced
+    fit sees the line: the line is broader than the model allows, the forced flux a lower limit."""
+    if not free.ok and free.fail == 'width' and forced.snr(gd.main) >= cfg.ratio_snr_min:
+        forced.qflag |= QF_BROAD
+    return forced
+
+
+def _choose_anchor(gd, cfg, template, allow_free, vlim=None):
     forced = fit_forced(gd, *template)
     if not allow_free:
         return forced
     v0, s0 = template[0][0]
-    free = fit_group_best(gd, cfg, v0, s0, base=forced)
-    return free if (free.ok and free.snr(gd.main) >= cfg.force_below) else forced
+    free = fit_group_best(gd, cfg, v0, s0, vlim=vlim, base=forced)
+    if free.ok and free.snr(gd.main) >= cfg.force_below:
+        return free
+    return _broad_flag(forced, free, gd, cfg)
 
 
-def fit_anchor(gd, cfg, template, allow_free=True):
+def fit_anchor(gd, cfg, template, allow_free=True, vlim=None):
     """Anchor group of one bin: free (1..max_components) if the line is detected, else forced to
-    `template` ([(v, sigma)], fracs); fitted, clipped against that fit, refitted."""
-    fit = _choose_anchor(gd, cfg, template, allow_free)
+    `template` ([(v, sigma)], fracs); fitted, clipped against that fit, refitted.  vlim: velocity
+    range of the free components (default +-dv_max)."""
+    fit = _choose_anchor(gd, cfg, template, allow_free, vlim)
     keep = clip_mask(gd, fit, cfg)
     if (~keep).any() and keep.sum() >= 8:
         gdc = gd.subset(keep)
         if gdc.ok:
-            fit = _choose_anchor(gdc, cfg, template, allow_free)
+            fit = _choose_anchor(gdc, cfg, template, allow_free, vlim)
     return fit
 
 
@@ -818,11 +999,11 @@ def fit_other(gd, cfg, template, anchor_detected):
         if free.snr(gd.main) >= cfg.force_below and free.dbic_free >= cfg.bic_min:
             return _sii_bounded(gd, free, refit_free)
         forced.dbic_free = free.dbic_free
-    return forced
+    return _broad_flag(forced, free, gd, cfg)
 
 
 # ======================================================================== bins
-def line_sn_map(cube, wave, sd1, z, rest, sig_kms, band, fp):
+def line_sn_map(cube, wave, sd1, z, rest, sig_kms, band, fp, rel=None):
     """Continuum-subtracted narrow-band signal of one line per spaxel and its noise (+-3 sigma_obs;
     continuum = median of line-free side bands 1500-4000 km/s away).  (None, None) if not covered."""
     lam = rest * (1 + z)
@@ -838,6 +1019,8 @@ def line_sn_map(cube, wave, sd1, z, rest, sig_kms, band, fp):
         fin = np.isfinite(cube[line]) & np.isfinite(sd1[line])[:, None, None]
         S = np.sum(np.where(fin, cube[line] - cont, 0.0), axis=0)
         N = np.sqrt(np.sum(np.where(fin, sd1[line][:, None, None] ** 2, 0.0), axis=0))
+        if rel is not None:                    # noisier spaxels (field edge) get their own noise
+            N = N * np.nan_to_num(rel, nan=np.inf)
     bad = (fin.sum(0) < 0.7 * line.sum()) | ~np.isfinite(cont) | ~fp | ~np.isfinite(N) | (N <= 0)
     S[bad] = np.nan
     N[bad] = np.nan
@@ -998,8 +1181,10 @@ def _null_snrs(wave, spec, err, z, rest, sig_kms, band, cfg, offsets):
         if np.min(np.abs(known - lam)) < half + 5 * sg:
             continue
         sel = (np.abs(wave - lam) < half) & np.isfinite(spec) & np.isfinite(err) & (err > 0)
-        if sel.sum() < 10:
-            continue
+        core = np.abs(wave - lam) < 2 * sg
+        if (sel.sum() < 10 or not core.any() or sel[core].mean() < cfg.min_cover
+                or (sel & (wave < lam - 2 * sg)).sum() < 3 or (sel & (wave > lam + 2 * sg)).sum() < 3):
+            continue                       # the null line must lie on data, with continuum on both sides
         x, y, e = wave[sel], spec[sel], err[sel]
         A = np.column_stack([np.ones_like(x), x - x.mean(), _unit_gauss(x, lam, sg)])
         coef, _ = _solve(A, y, e)
@@ -1058,19 +1243,42 @@ def _free_null_snrs(wave, spec, err, z, anchor, band, cfg, template):
         gd = GroupData(anchor, wave, spec, err, zo, band, cfg)
         if not gd.ok:
             continue
-        f = fit_anchor(gd, cfg, template)
-        if f.ok and np.isfinite(f.snr(g['main'])):
-            out.append(float(f.snr(g['main'])))
+        forced = fit_forced(gd, *template)    # the best FREE fit, whatever its S/N (no censoring at 5)
+        free = fit_group_best(gd, cfg, template[0][0][0], template[0][0][1], base=forced)
+        snr = free.snr(g['main']) if free.ok else forced.snr(g['main'])
+        if np.isfinite(snr):
+            out.append(float(snr))
     return out
 
 
-def _detected(snr, free_nulls, cfg):
-    """(detected, max null S/N): S/N / max(1, max(null S/N) / det_null_ref) >= force_below - the
-    line-free windows of the same spectrum set the effective noise when they show more than pure
-    noise would (det_null_ref = typical largest free-fit S/N of pure noise in ~8 windows)."""
+def _detected(fit, main, free_nulls, cfg):
+    """(detected, max null S/N) of a free reference fit: S/N / max(1, max(null S/N) / det_null_ref)
+    >= force_below - the line-free windows of the same spectrum set the effective noise when they
+    show more than pure noise would (det_null_ref = typical largest free-fit S/N of pure noise in ~8
+    windows) - and its narrowest component no broader than sig_det_max (a broader single 'line' is
+    continuum structure absorbed by a Gaussian)."""
     nm = max(free_nulls) if free_nulls else np.nan
     s = max(1.0, nm / cfg.det_null_ref) if np.isfinite(nm) else 1.0
-    return bool(np.isfinite(snr) and snr / s >= cfg.force_below), nm
+    snr = fit.snr(main)
+    narrow = bool(fit.comps) and fit.comps[0][2] <= cfg.sig_det_max
+    return bool(np.isfinite(snr) and snr / s >= cfg.force_below and narrow), nm
+
+
+SIZE_CLASSES = ((1, 1), (2, 3), (4, 8), (9, 16), (17, 40), (41, 100), (101, 100000))
+
+
+def _scale_table(pairs, cfg):
+    """[(N, NMAD)] of the null-test S/N in size classes of the summed region (each needs
+    >= max(10, null_min / 2) tests; NMAD clipped to err_scale_range) - errors of big bins and of
+    the TOTAL spectrum are calibrated on regions of their own size."""
+    out = []
+    need = max(10, cfg.null_min // 2)
+    for lo, hi in SIZE_CLASSES:
+        sub = [(n, s) for n, s in pairs if lo <= n <= hi and np.isfinite(s)]
+        if len(sub) >= need:
+            out.append((float(np.median([n for n, _ in sub])),
+                        float(np.clip(_nmad([s for _, s in sub]), *cfg.err_scale_range))))
+    return out
 
 
 def _apply_nulls(nz, nulls, cfg):
@@ -1093,8 +1301,8 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
     if z is None or not np.isfinite(z) or z <= 0:
         raise ValueError('no redshift')
     groups = list(cfg.groups)
-    if anchor is None:
-        anchor = next((a for a in ANCHORS if a in groups and pick_band(stacks, a, z, cfg)), None)
+    if anchor is None:                # Ha, else [OIII], else Hb - independent of the groups asked for
+        anchor = next((a for a in ANCHORS if pick_band(stacks, a, z, cfg)), None)
     if anchor is None:
         raise ValueError('none of Hα, [OIII], Hβ is covered by the bands')
     if anchor not in groups:
@@ -1106,6 +1314,13 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
     main = GROUPS[anchor]['main']
     rest_a = REST[main]
     fps = {b: footprint(st.coverage, cfg) for b, st in stacks.items()}
+    rels = {}                         # relative noise per spaxel; noisy edges (r > rel_max) not used
+    for b, st in stacks.items():
+        rel = relative_noise(st.cube, st.wave, z, fps[b])
+        quiet = fps[b] & (np.nan_to_num(rel, nan=np.inf) <= cfg.rel_max)
+        if quiet.sum() >= 0.5 * fps[b].sum():
+            fps[b] = quiet
+        rels[b] = np.where(fps[b], rel, np.nan)
     fp_a = fps[aband]
     ny, nx = A.cube.shape[1:]
     if not fp_a.any():
@@ -1114,11 +1329,11 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
 
     # 1. centre (anchor-line peak near the grid centre) and the noise around it
     grid_c = (ny // 2, nx // 2)
-    noise_a = band_noise(A, fp_a, grid_c, None, z, cfg)
-    S0, _ = line_sn_map(A.cube, A.wave, noise_a.sd1, z, rest_a, cfg.sig_default, aband, fp_a)
+    noise_a = band_noise(A, fp_a, grid_c, None, z, cfg, rels[aband])
+    S0, _ = line_sn_map(A.cube, A.wave, noise_a.sd1, z, rest_a, cfg.sig_default, aband, fp_a, noise_a.rel)
     centre, centred = find_centre(S0, fp_a, cfg.max_offset) if S0 is not None else (grid_c, False)
     if centre != grid_c:
-        noise_a = band_noise(A, fp_a, centre, None, z, cfg)
+        noise_a = band_noise(A, fp_a, centre, None, z, cfg, rels[aband])
 
     # 2. error scale of the anchor band BEFORE any decision (null tests in the central aperture and
     #    in sky boxes), then the reference kinematics: central aperture, then the whole galaxy region
@@ -1144,7 +1359,7 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
             f = fit_anchor(gd, cfg, tpl0)
             ref_snr = f.snr(main) if f.ok else np.nan
             if f.ok and not f.forced:
-                ok, null_max = _detected(ref_snr, _free_null_snrs(A.wave, spec, err, z, anchor, aband, cfg, tpl0), cfg)
+                ok, null_max = _detected(f, main, _free_null_snrs(A.wave, spec, err, z, anchor, aband, cfg, tpl0), cfg)
                 v50, w80, _, _ = profile_stats(f.comps, f.fracs)
                 if np.isfinite(v50) and ok:
                     z_ref = (1 + z) * (1 + v50 / C_KMS) - 1
@@ -1152,7 +1367,7 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
                     ref_src = 'aperture'
 
     def regions(zz, ss, sd1):
-        S, N = line_sn_map(A.cube, A.wave, sd1, zz, rest_a, ss, aband, fp_a)
+        S, N = line_sn_map(A.cube, A.wave, sd1, zz, rest_a, ss, aband, fp_a, noise_a.rel)
         if S is None:
             nan = np.full((ny, nx), np.nan)
             return nan, nan.copy(), None, np.nan, False
@@ -1168,7 +1383,7 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
             tpl1 = ([(0.0, sig_ref)], [1.0])
             ft = fit_anchor(gd, cfg, tpl1) if gd.ok else GroupFit(anchor, aband)
             if ft.ok and not ft.forced:
-                ok, nm = _detected(ft.snr(main), _free_null_snrs(A.wave, spec, err, z_ref, anchor, aband, cfg, tpl1), cfg)
+                ok, nm = _detected(ft, main, _free_null_snrs(A.wave, spec, err, z_ref, anchor, aband, cfg, tpl1), cfg)
                 if not ok:                             # not convincingly above the line-free windows
                     ft = GroupFit(anchor, aband)
                 null_max = float(np.nanmax([null_max, nm])) if np.isfinite([null_max, nm]).any() else np.nan
@@ -1187,8 +1402,8 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
     allow_free = bool(detect)
 
     # 3. noise of the anchor band with the galaxy excluded; S/N map; bins
-    noise_a = band_noise(A, fp_a, centre, region, z_ref, cfg)
-    S2, N2 = line_sn_map(A.cube, A.wave, noise_a.sd1, z_ref, rest_a, sig_ref, aband, fp_a)
+    noise_a = band_noise(A, fp_a, centre, region, z_ref, cfg, rels[aband])
+    S2, N2 = line_sn_map(A.cube, A.wave, noise_a.sd1, z_ref, rest_a, sig_ref, aband, fp_a, noise_a.rel)
     if S2 is not None:
         S, N = S2, N2
         fin = region & np.isfinite(S) & np.isfinite(N)
@@ -1217,7 +1432,7 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
             cb = (int(round(cb[0])), int(round(cb[1])))
         else:
             cb = (st.cube.shape[1] // 2, st.cube.shape[2] // 2)
-        bands[b] = dict(binmap=bm, noise=band_noise(st, fps[b], cb, bm >= 0, z_ref, cfg))
+        bands[b] = dict(binmap=bm, noise=band_noise(st, fps[b], cb, bm >= 0, z_ref, cfg, rels[b]))
     group_band = {g: pick_band(stacks, g, z_ref, cfg) for g in groups}
     group_band[anchor] = aband
     if cfg.null_test:
@@ -1226,18 +1441,26 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
             rest_b = next((REST[GROUPS[g]['main']] for g in [anchor] + groups if group_band.get(g) == b), None)
             if rest_b is None:
                 continue
-            nulls = []
+            pairs = []                                 # (region size, null S/N)
             with warnings.catch_warnings():
                 warnings.simplefilter('ignore')
                 for b_id in range(nbins):
                     sel = info['binmap'] == b_id
                     if sel.any():
                         s, e = region_spectrum(stacks[b].cube, sel, info['noise'], cfg.edge_margin)
-                        nulls += _null_snrs(stacks[b].wave, s, e, z_ref, rest_b, sig_ref, b, cfg, offsets)
-                if len(nulls) < cfg.null_min:          # few bins: add sky boxes of this band
-                    nulls += _box_nulls(stacks[b], info['noise'], z_ref, rest_b, sig_ref, b, cfg)
-            if not _apply_nulls(info['noise'], nulls, cfg) and b == aband:
-                info['noise'].err_scale = err_scale_det
+                        pairs += [(int(sel.sum()), v) for v in
+                                  _null_snrs(stacks[b].wave, s, e, z_ref, rest_b, sig_ref, b, cfg, offsets)]
+                if len(pairs) < cfg.null_min:          # few bins: add sky boxes of this band
+                    pairs += [(9, v) for v in _box_nulls(stacks[b], info['noise'], z_ref, rest_b, sig_ref, b, cfg)]
+                sel = info['binmap'] >= 0
+                if nbins > 1 and sel.any():            # the TOTAL spectrum calibrates itself
+                    s, e = region_spectrum(stacks[b].cube, sel, info['noise'], cfg.edge_margin)
+                    pairs += [(int(sel.sum()), v) for v in
+                              _null_snrs(stacks[b].wave, s, e, z_ref, rest_b, sig_ref, b, cfg, _dense_offsets())]
+            nz = info['noise']
+            if not _apply_nulls(nz, [v for _, v in pairs], cfg) and b == aband:
+                nz.err_scale = err_scale_det
+            nz.scale_n = _scale_table(pairs, cfg) if len(pairs) >= cfg.null_min else []
 
     def spectra(sel_of):
         out = {}
@@ -1267,11 +1490,13 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
                 fits[g] = fit_other(gd, cfg, template_of(fa), detected)
 
     # 5. anchor of every bin: free where detected; the others forced at the interpolated velocity
-    rows, spec_of = [], {}
-    with warnings.catch_warnings():
-        warnings.simplefilter('ignore')
+    spec_of = {}
+    for b_id in range(nbins):
+        spec_of[b_id] = spectra(lambda bm, i=b_id: bm == i)
+
+    def anchor_pass():
+        out = []
         for b_id in range(nbins):
-            spec_of[b_id] = spectra(lambda bm, i=b_id: bm == i)
             sel = binmap == b_id
             ys, xs = np.nonzero(sel)
             row = dict(bin=b_id, npix=int(sel.sum()), x=float(xs.mean()), y=float(ys.mean()), fits={})
@@ -1280,11 +1505,27 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
                 gd = GroupData(anchor, *sp, z_ref, aband, cfg)
                 if gd.ok:
                     row['fits'][anchor] = fit_anchor(gd, cfg, ref_tpl, allow_free=allow_free)
-            rows.append(row)
-        det = [(r['x'], r['y'], profile_stats(r['fits'][anchor].comps, r['fits'][anchor].fracs)[0],
-                r['fits'][anchor].snr(main)) for r in rows
-               if anchor in r['fits'] and r['fits'][anchor].ok and not r['fits'][anchor].forced]
-        det = [d for d in det if np.isfinite(d[2])]
+            out.append(row)
+        d = [(r['x'], r['y'], profile_stats(r['fits'][anchor].comps, r['fits'][anchor].fracs)[0],
+              r['fits'][anchor].snr(main), r['fits'][anchor].flux.get(main, np.nan)) for r in out
+             if anchor in r['fits'] and r['fits'][anchor].ok and not r['fits'][anchor].forced]
+        return out, [x for x in d if np.isfinite(x[2])]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        rows, det = anchor_pass()
+        # the reference must describe the galaxy: if the flux-weighted median velocity of the detected
+        # bins is far from it (the summed spectrum was pulled by a coherent sky residual), recentre once
+        if len(det) >= 3:
+            v, wt = np.array([x[2] for x in det]), np.clip([x[4] for x in det], 0, None)
+            if wt.sum() > 0:
+                o = np.argsort(v)
+                vmed = float(v[o][np.searchsorted(np.cumsum(wt[o]), 0.5 * wt.sum())])
+                if abs(vmed) > cfg.ref_recentre:
+                    z_ref = (1 + z_ref) * (1 + vmed / C_KMS) - 1
+                    ref_src += '+bins'
+                    rows, det = anchor_pass()
+        det = [x[:4] for x in det]
         if det:
             for r in rows:
                 fa = r['fits'].get(anchor)
@@ -1308,8 +1549,9 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
             total = {}
             if aband in sp:
                 gd = GroupData(anchor, *sp[aband], z_ref, aband, cfg)
-                if gd.ok:
-                    total[anchor] = fit_anchor(gd, cfg, ref_tpl, allow_free=allow_free)
+                vt = float(np.clip(max([abs(x[2]) for x in det], default=0.0) + 100.0, 150.0, cfg.dv_max))
+                if gd.ok:                  # components only within the velocities the bins show (+100 km/s)
+                    total[anchor] = fit_anchor(gd, cfg, ref_tpl, allow_free=allow_free, vlim=(-vt, vt))
             fit_others(sp, total.get(anchor), total)
 
     prod = dict(name=name, z=float(z), z_ref=float(z_ref), sig_ref=float(sig_ref), ref_snr=float(ref_snr),
@@ -1324,6 +1566,7 @@ def run_galaxy(stacks, z, cfg=None, name='', anchor=None, progress=None):
                 fluxk={b: _fluxk(st) for b, st in stacks.items()})
     prod['table'] = _bins_table(prod)
     prod['total_row'] = _row_of(prod, -1, total, int((binmap >= 0).sum())) if total else None
+    prod['total_fits'] = total or {}
     col = f'{line_tag(main)}_FLUX'
     tot = prod['total_row']
     if tot is not None and np.isfinite(tot.get(col, np.nan)) and tot[col] != 0 and col in prod['table']:
@@ -1381,6 +1624,18 @@ def oh_m13(n2):
     return float(8.743 + 0.462 * n2) if (np.isfinite(n2) and -1.6 < n2 < -0.2) else np.nan
 
 
+def _bg_cont_err(prod, gk, band, b_id):
+    """Continuum uncertainty at the main line of group gk from the subtracted background:
+    (spaxels of the bin in that band) x bg_err."""
+    bm, nz = prod['band_binmaps'].get(band), prod['noise'].get(band)
+    if bm is None or nz is None or nz.bg_err is None:
+        return 0.0
+    npix = int((bm >= 0).sum()) if b_id < 0 else int((bm == b_id).sum())
+    w = prod['stacks'][band].wave
+    i = int(np.clip(np.searchsorted(w, REST[GROUPS[gk]['main']] * (1 + prod['z_ref'])), 0, len(w) - 1))
+    return float(npix * nz.bg_err[i])
+
+
 def _row_of(prod, b_id, fits, npix=0, x=np.nan, y=np.nan):
     cfg = prod['cfg']
     fits = fits or {}
@@ -1402,6 +1657,8 @@ def _row_of(prod, b_id, fits, npix=0, x=np.nan, y=np.nan):
         r[f'{G}_X0'] = f.x0 if f else np.nan
         r[f'{G}_CONT_A'], r[f'{G}_CONT_B'] = f.cont if f else (np.nan, np.nan)
         r[f'{G}_CONT_MAIN'], r[f'{G}_CONT_MAIN_ERR'] = f.cont_main if f else (np.nan, np.nan)
+        if f:                          # + uncertainty of the subtracted background (n spaxels x bg_err)
+            r[f'{G}_CONT_MAIN_ERR'] = float(np.hypot(r[f'{G}_CONT_MAIN_ERR'], _bg_cont_err(prod, gk, f.band, b_id)))
         r[f'{G}_TPL_V'], r[f'{G}_TPL_SIG'] = f.template if (f and f.forced) else (np.nan, np.nan)
         for k in range(cfg.max_components):
             has = bool(f and k < len(f.comps))
@@ -1412,7 +1669,9 @@ def _row_of(prod, b_id, fits, npix=0, x=np.nan, y=np.nan):
             r[f'{G}_C{k + 1}_SIG'] = c[2] if kin_ok else np.nan
             r[f'{G}_C{k + 1}_SIGERR'] = c[3] if kin_ok else np.nan
             r[f'{G}_C{k + 1}_UNRES'] = int(bool(c[4])) if (has and kin_ok) else 0
-            r[f'{G}_C{k + 1}_FRAC'] = f.fracs[k] if (f and k < len(f.fracs)) else np.nan
+            frac = f.fracs[k] if (f and k < len(f.fracs)) else np.nan
+            r[f'{G}_C{k + 1}_MFRAC'] = frac                                       # model (template) weight
+            r[f'{G}_C{k + 1}_FRAC'] = frac if kin_ok else np.nan                 # measured flux share
         v50, w80, v10, v90 = profile_stats(f.comps, f.fracs) if kin_ok else (np.nan,) * 4
         r[f'{G}_V50'], r[f'{G}_W80'], r[f'{G}_V10'], r[f'{G}_V90'] = v50, w80, v10, v90
         fk = prod['fluxk'].get(f.band, (np.nan, np.nan))[0] if f else np.nan
@@ -1438,6 +1697,20 @@ def _row_of(prod, b_id, fits, npix=0, x=np.nan, y=np.nan):
     def ok(line):
         return r.get(f'{line_tag(line)}_SNR', np.nan) >= cfg.ratio_snr_min
 
+    def cov(a, b):
+        """Covariance of two total line fluxes [native units]: from the fit if both lines belong to
+        the same group (doublet ties, shared kinematics, pinned [SII] ratio), else 0."""
+        ga, gb = LINE_GROUP.get(a), LINE_GROUP.get(b)
+        if ga != gb or fits.get(ga) is None:
+            return 0.0
+        c = fits[ga].flux_cov.get((a, b), 0.0)
+        return c if np.isfinite(c) else 0.0
+
+    def xband(*lines):
+        """1 if the lines were fitted in different bands, 0 if in one band, -1 if one is missing."""
+        bs = [band_of.get(k) for k in lines]
+        return -1 if not all(bs) else int(len(set(bs)) > 1)
+
     def pair(a, b):
         """(fa, ea, fb, eb, across bands) in common units: native in one band, else CGS."""
         La, Lb = line_tag(a), line_tag(b)
@@ -1445,38 +1718,46 @@ def _row_of(prod, b_id, fits, npix=0, x=np.nan, y=np.nan):
             return r[f'{La}_FLUX'], r[f'{La}_FLUX_ERR'], r[f'{Lb}_FLUX'], r[f'{Lb}_FLUX_ERR'], False
         return r[f'{La}_FLUX_CGS'], r[f'{La}_FLUX_CGS_ERR'], r[f'{Lb}_FLUX_CGS'], r[f'{Lb}_FLUX_CGS_ERR'], True
 
+    xcal = 0.4343 * np.sqrt(2) * 0.1     # two independent absolute calibrations (FLUXKERR ~ 10 % each)
+
     def lg(a, b):
         if not (ok(a) and ok(b)):
-            return np.nan, np.nan, 0
+            return np.nan, np.nan
         fa, ea, fb, eb, xb = pair(a, b)
         if not (np.isfinite(fa) and np.isfinite(fb) and fa > 0 and fb > 0):
-            return np.nan, np.nan, int(xb)
-        e = 0.4343 * np.hypot(ea / fa, eb / fb)
-        if xb:                          # two independent absolute calibrations (FLUXKERR ~ 10 % each)
-            e = float(np.hypot(e, 0.4343 * np.sqrt(2) * 0.1))
-        return float(np.log10(fa / fb)), float(e), int(xb)
-    r['LOG_N2'], r['LOG_N2_ERR'], _ = lg('NII6583', 'Ha')
-    r['LOG_O3'], r['LOG_O3_ERR'], r['LOG_O3_XBAND'] = lg('OIII5007', 'Hb')
+            return np.nan, np.nan
+        var = (ea / fa) ** 2 + (eb / fb) ** 2 - (0.0 if xb else 2 * cov(a, b) / (fa * fb))
+        e = 0.4343 * np.sqrt(max(var, 0.0))
+        return float(np.log10(fa / fb)), float(np.hypot(e, xcal) if xb else e)
+    r['LOG_N2'], r['LOG_N2_ERR'] = lg('NII6583', 'Ha')
+    r['LOG_N2_XBAND'] = xband('NII6583', 'Ha')
+    r['LOG_O3'], r['LOG_O3_ERR'] = lg('OIII5007', 'Hb')
+    r['LOG_O3_XBAND'] = xband('OIII5007', 'Hb')
     s2 = s2e = np.nan
     if ok('SII6716') and ok('SII6731') and ok('Ha'):
         fa, ea, fh, eh, xb = pair('SII6716', 'Ha')
         fb, eb, _, _, _ = pair('SII6731', 'Ha')
         if np.all(np.isfinite([fa, fb, fh])) and fa + fb > 0 and fh > 0:
+            k = 1e4 * prod['fluxk'].get(band_of.get('SII6716'), (np.nan,))[0] if xb else 1.0
+            var_s = ea ** 2 + eb ** 2 + 2 * cov('SII6716', 'SII6731') * k * k
             s2 = float(np.log10((fa + fb) / fh))
-            s2e = float(0.4343 * np.hypot(np.hypot(ea, eb) / (fa + fb), eh / fh))
+            s2e = float(0.4343 * np.sqrt(max(var_s, 0.0) / (fa + fb) ** 2 + (eh / fh) ** 2))
             if xb:
-                s2e = float(np.hypot(s2e, 0.4343 * np.sqrt(2) * 0.1))
+                s2e = float(np.hypot(s2e, xcal))
     r['LOG_S2'], r['LOG_S2_ERR'] = s2, s2e
+    r['LOG_S2_XBAND'] = xband('SII6716', 'Ha')
     if np.isfinite(r['LOG_O3']) and np.isfinite(r['LOG_N2']):
         r['LOG_O3N2'] = r['LOG_O3'] - r['LOG_N2']
         r['LOG_O3N2_ERR'] = float(np.hypot(r['LOG_O3_ERR'], r['LOG_N2_ERR']))
     else:
         r['LOG_O3N2'] = r['LOG_O3N2_ERR'] = np.nan
+    r['LOG_O3N2_XBAND'] = max(r['LOG_O3_XBAND'], r['LOG_N2_XBAND']) if min(r['LOG_O3_XBAND'], r['LOG_N2_XBAND']) >= 0 else -1
     R = Re = np.nan
     if ok('SII6716') and ok('SII6731'):
         a, ea, b, eb = r['SII6716_FLUX'], r['SII6716_FLUX_ERR'], r['SII6731_FLUX'], r['SII6731_FLUX_ERR']
         if a > 0 and b > 0:
-            R, Re = a / b, a / b * np.hypot(ea / a, eb / b)
+            var = (ea / a) ** 2 + (eb / b) ** 2 - 2 * cov('SII6716', 'SII6731') / (a * b)
+            R, Re = a / b, a / b * np.sqrt(max(var, 0.0))
             if fits.get('sii') is not None and fits['sii'].qflag & QF_SII_BOUND:
                 Re = np.nan                 # pinned to a physical limit: a limit, no error, no density
     r['SII_RATIO'], r['SII_RATIO_ERR'] = R, Re
@@ -1498,30 +1779,63 @@ def _bins_table(prod):
     return pd.DataFrame([_row_of(prod, r['bin'], r['fits'], r['npix'], r['x'], r['y']) for r in prod['rows']])
 
 
+CGS_UNIT = '10**(-17) erg s-1 cm-2'
+
+
+def fits_unit(bunit):
+    """FITS-standard form of the cube unit ('ADU/sec' -> 'adu s-1')."""
+    u = (bunit or 'ADU/sec').strip()
+    return u.replace('ADU', 'adu').replace('/sec', ' s-1').replace('/s', ' s-1')
+
+
+def column_unit(col, native):
+    """FITS unit string of a BINS / TOTAL column ('' = dimensionless); native = fits_unit(cube BUNIT)."""
+    import re
+    if re.search(r'_FLUX_CGS(_ERR)?$', col):
+        return CGS_UNIT
+    if re.search(r'_FLUX(_ERR)?$', col):
+        return f'{native} um'
+    if re.search(r'_(V50|W80|V10|V90|TPL_V|TPL_SIG|C\d_(V|VERR|SIG|SIGERR|MV|MSIG))$', col):
+        return 'km s-1'
+    if col.endswith('_X0'):
+        return 'um'
+    if col.endswith('_CONT_B'):
+        return f'{native} um-1'
+    if re.search(r'_CONT_(A|MAIN|MAIN_ERR)$', col):
+        return native
+    if col in ('XBAR', 'YBAR'):
+        return 'pix'
+    if col.startswith('EW_HA'):
+        return 'Angstrom'
+    if col == 'NE_SII':
+        return 'cm-3'
+    return ''
+
+
 def _map_columns(prod):
     """BINS columns painted as maps -> unit."""
     cfg = prod['cfg']
-    flux_unit = f"{prod['bunit']} um"
-    cols = {}
+    names = []
     for gk in prod['groups']:
         G = group_tag(gk)
-        cols.update({f'{G}_NCOMP': '', f'{G}_FORCED': '', f'{G}_QFLAG': '', f'{G}_CHI2NU': '',
-                     f'{G}_V50': 'km/s', f'{G}_W80': 'km/s', f'{G}_V10': 'km/s', f'{G}_V90': 'km/s'})
+        names += [f'{G}_NCOMP', f'{G}_FORCED', f'{G}_QFLAG', f'{G}_CHI2NU', f'{G}_V50', f'{G}_W80', f'{G}_V10',
+                  f'{G}_V90']
         for k in range(cfg.max_components):
-            cols.update({f'{G}_C{k + 1}_V': 'km/s', f'{G}_C{k + 1}_SIG': 'km/s', f'{G}_C{k + 1}_FRAC': ''})
+            names += [f'{G}_C{k + 1}_V', f'{G}_C{k + 1}_SIG', f'{G}_C{k + 1}_FRAC']
         for line in GROUPS[gk]['lines']:
             L = line_tag(line)
-            cols.update({f'{L}_FLUX': flux_unit, f'{L}_FLUX_ERR': flux_unit, f'{L}_SNR': '',
-                         f'{L}_FLUX_CGS': '1e-17 erg/s/cm2'})
-            for k in range(cfg.max_components):
-                cols[f'{L}_C{k + 1}_FLUX'] = flux_unit
-    cols.update({'LOG_N2': '', 'LOG_O3': '', 'LOG_S2': '', 'LOG_O3N2': '', 'SII_RATIO': '', 'NE_SII': 'cm-3',
-                 'OH_N2_M13': '', 'EW_HA': 'Angstrom'})
-    return cols
+            names += [f'{L}_FLUX', f'{L}_FLUX_ERR', f'{L}_SNR', f'{L}_FLUX_CGS']
+            names += [f'{L}_C{k + 1}_FLUX' for k in range(cfg.max_components)]
+    names += ['LOG_N2', 'LOG_O3', 'LOG_S2', 'LOG_O3N2', 'SII_RATIO', 'NE_SII', 'OH_N2_M13', 'EW_HA']
+    native = fits_unit(prod['bunit'])
+    return {n: column_unit(n, native) for n in names}
 
 
 def _maps(prod):
-    """{EXTNAME: (2-D image on the anchor grid, unit)}; maps without information are left out."""
+    """{EXTNAME: (2-D image on the anchor grid, unit)}; maps without information are left out.
+    Number of components and component fluxes are not painted in forced bins (template, not a
+    measurement of that group)."""
+    import re
     tab, bm = prod['table'], prod['binmap']
     with np.errstate(all='ignore'):
         sn = np.where(np.isfinite(prod['S']) & (prod['N'] > 0), prod['S'] / prod['N'], np.nan).astype(np.float32)
@@ -1533,6 +1847,12 @@ def _maps(prod):
         if col not in tab.columns:
             continue
         vals = tab[col].to_numpy(dtype=float)
+        m = re.match(r'^(\w+?)_(NCOMP|C\d_FLUX)$', col)
+        if m:
+            G = m.group(1) if m.group(2) == 'NCOMP' else group_tag(LINE_GROUP.get(
+                next((k for k in REST if line_tag(k) == m.group(1)), ''), 'ha'))
+            if f'{G}_FORCED' in tab.columns:
+                vals = np.where(tab[f'{G}_FORCED'].to_numpy() == 1, np.nan, vals)
         if not np.isfinite(vals).any():
             continue
         if (col.endswith('_NCOMP') or col.endswith('_QFLAG')) and not np.any(vals > 0):
@@ -1553,12 +1873,22 @@ def _versions():
     """Package versions and the git hash of this code (cached; no console window on Windows)."""
     if _VERSIONS:
         return _VERSIONS
+    import hashlib
+    import importlib
     import importlib.metadata as md
     for mod in ('numpy', 'scipy', 'astropy', 'vorbin'):
         try:
             _VERSIONS[mod] = md.version(mod)
         except Exception:
-            _VERSIONS[mod] = '?'
+            try:                       # frozen app: no dist-info, but the modules know their version
+                _VERSIONS[mod] = str(getattr(importlib.import_module(mod), '__version__', '?'))
+            except Exception:
+                _VERSIONS[mod] = '?'
+    try:                               # content hash of this file: identifies the exact pipeline code
+        with open(os.path.abspath(__file__), 'rb') as f:
+            _VERSIONS['code'] = hashlib.sha256(f.read()).hexdigest()[:12]
+    except OSError:
+        _VERSIONS['code'] = '?'
     here = os.path.dirname(os.path.abspath(__file__))
     kw = dict(capture_output=True, text=True, timeout=5)
     if os.name == 'nt':
@@ -1584,6 +1914,7 @@ def write_product(prod, path, meta=None):
                      ERRSCALE, CLOSURE, versions (PIPEVER, APPVER, GITHASH, NUMPYVER, ...), inputs (HISTORY)
       image HDUs     maps on the anchor-band grid (celestial WCS); EXTNAME = BINS column name
       BINMAP_<band>  the bins on the grid of every other band
+      RELNOISE_<band> relative noise r of every spaxel (sigma_1 of NOISE_<band> is for r = 1)
       BINS / TOTAL   one row per bin / the sum of all bins (every parameter; models via model_curve)
       LINES          rest wavelengths, groups, ties, band and LSF used
       CONFIG         the configuration (KEY, json VALUE)
@@ -1599,16 +1930,17 @@ def write_product(prod, path, meta=None):
     h0['SCHEMA'] = (SCHEMA, 'product format')
     h0['PIPEVER'] = (PIPELINE_VERSION, 'empower_explorer.pipeline.voronoi_binning')
     h0['APPVER'] = (vers.get('app', '?'), 'EMPOWER Explorer version')
-    h0['GITHASH'] = (vers.get('git', '?'), 'git commit of the code')
+    h0['GITHASH'] = (vers.get('git', '?'), 'git commit of the repository')
+    h0['CODEHASH'] = (vers.get('code', '?'), 'sha256[:12] of voronoi_binning.py')
     for k, key in (('numpy', 'NUMPYVER'), ('scipy', 'SCIPYVER'), ('astropy', 'ASTROVER'), ('vorbin', 'VORBINV')):
         h0[key] = vers.get(k, '?')
     h0['DATE'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
     h0['STATUS'] = (prod['status'], 'ok / single / no_detection')
-    h0['DETECT'] = (prod['detect'], 'anchor line detected (galaxy region found)')
+    h0['DETECT'] = (prod['detect'], 'anchor line detected (calibrated S/N, null test)')
     h0['Z'] = (prod['z'], 'catalogue redshift')
     h0['Z_REF'] = (prod['z_ref'], 'velocities refer to this z')
     h0['SIG_REF'] = (prod['sig_ref'], 'km/s intrinsic sigma of the reference')
-    h0['REFSRC'] = (prod['ref_src'], 'reference from: total / aperture / default')
+    h0['REFSRC'] = (prod['ref_src'], 'total/aperture/default; +bins: recentred on bins')
     if np.isfinite(prod['ref_snr']):
         h0['REF_SNR'] = (prod['ref_snr'], 'anchor S/N of the reference fit')
     h0['ANCHOR'] = (prod['anchor'], 'line group defining bins and kinematics')
@@ -1623,8 +1955,9 @@ def write_product(prod, path, meta=None):
     h0['REGDIST'] = (prod['reg_dist'] if np.isfinite(prod['reg_dist']) else -1, 'px region to centre, -1 none')
     h0['BGSUB'] = (bool(cfg.bg_subtract), 'residual background subtracted')
     for b, nz in prod['noise'].items():
-        h0[f'ERRSC_{b}'] = (nz.err_scale, f'error scale {b} (null tests)')
+        h0[f'ERRSC_{b}'] = (nz.err_scale, f'error scale {b} (null tests; by size: NOISE_{b})')
         h0[f'NNULL_{b}'] = (nz.n_null, f'null tests {b}')
+        h0[f'NSKY_{b}'] = (nz.n_sky, f'sky spaxels of the noise model {b} ({nz.sky_src})')
         if np.isfinite(nz.null_nmad):
             h0[f'NMAD_{b}'] = (nz.null_nmad, f'NMAD of the null-test S/N {b}')
         fk = prod['fluxk'].get(b, (np.nan, np.nan))[0]
@@ -1637,8 +1970,23 @@ def write_product(prod, path, meta=None):
     if np.isfinite(prod.get('closure', np.nan)):
         h0['CLOSURE'] = (prod['closure'], 'sum of the bin fluxes / fit of their sum')
     h0['MAXCOMP'] = cfg.max_components
-    h0['BUNIT'] = (f"{prod['bunit']} um", 'unit of the line fluxes')
+    native = fits_unit(prod['bunit'])
+    h0['BUNIT'] = (f'{native} um', 'unit of the line fluxes (cube unit x micron)')
     h0['FITSEC'] = round(prod['seconds'], 1)
+    for line in (f'Pixel coordinates (CENTX/CENTY, XBAR/YBAR, BINMAP) are 0-based (numpy order y, x).',
+                 f'<G>_QFLAG bits: {QF_CHI2} reduced chi2 > {cfg.chi2nu_max:g}, {QF_CLIPPED} pixels clipped '
+                 f'(table CLIPPED), {QF_UNRESOLVED} a free component unresolved, {QF_SII_BOUND} [SII] ratio at a limit, '
+                 f'{QF_BROAD} line broader than the model (forced flux = lower limit), {QF_PARTIAL} a line of '
+                 'the group not covered.',
+                 'Component errors (_C<k>_VERR/_SIGERR/_FLUX_ERR) are Fisher errors: optimistic for components '
+                 'with S/N below ~10.',
+                 'Kinematics (_V, _SIG, _V50, _W80, _FRAC) are NaN where the group was forced to the anchor '
+                 f'template or its S/N < {cfg.kin_snr_min:g}; _MV/_MSIG/_MFRAC are the model parameters.',
+                 '*_FLUX_CGS = flux x 1e4 x FLUXK_<band> (absolute calibration ~10 %); ratios across bands use '
+                 'them (<RATIO>_XBAND = 1) and include the calibration error.',
+                 'Velocities relative to Z_REF; sigma intrinsic (LSF removed). Format: '
+                 'empower_explorer/pipeline/voronoi_binning.py docstring.'):
+        h0.add_comment(line)
     for k, v in meta.items():
         try:
             h0[k[:8].upper()] = v
@@ -1660,15 +2008,36 @@ def write_product(prod, path, meta=None):
         st = prod['stacks'][b]
         hdus.append(fits.ImageHDU(bm.astype(np.int16), header=st.wcs.to_header() if st.wcs is not None else None,
                                   name=f'BINMAP_{b}'))
+    for b, nz in prod['noise'].items():           # relative noise of the spaxels (grid of that band)
+        if nz.rel is not None:
+            st = prod['stacks'][b]
+            hdus.append(fits.ImageHDU(np.asarray(nz.rel, np.float32),
+                                      header=st.wcs.to_header() if st.wcs is not None else None, name=f'RELNOISE_{b}'))
+    def table_hdu(df, name, units):
+        t = fits.BinTableHDU(Table.from_pandas(df), name=name)
+        for i, c in enumerate(df.columns):
+            u = units(c) if callable(units) else units.get(c, '')
+            if u:
+                t.header[f'TUNIT{i + 1}'] = u
+        return t
+
+    def col_unit(c):
+        return column_unit(c, native)
     tab = prod['table']
     names = list(tab.columns)
     up = [n.upper() for n in names]
     if len(set(up)) != len(up):
         raise RuntimeError('BINS column names collide ignoring case')
     if not tab.empty:
-        hdus.append(fits.BinTableHDU(Table.from_pandas(tab), name='BINS'))
+        hdus.append(table_hdu(tab, 'BINS', col_unit))
     if prod.get('total_row'):
-        hdus.append(fits.BinTableHDU(Table.from_pandas(pd.DataFrame([prod['total_row']])), name='TOTAL'))
+        hdus.append(table_hdu(pd.DataFrame([prod['total_row']]), 'TOTAL', col_unit))
+    clipped = []                       # pixels removed before the final fits (bin -1 = TOTAL)
+    for b_id, fits_ in [(r['bin'], r['fits']) for r in prod['rows']] + [(-1, prod.get('total_fits') or {})]:
+        for g, f in fits_.items():
+            clipped += [dict(BIN=int(b_id), GROUP=group_tag(g), BAND=f.band, WAVE=float(w)) for w in f.clipped]
+    if clipped:
+        hdus.append(table_hdu(pd.DataFrame(clipped), 'CLIPPED', {'WAVE': 'um'}))
     lines = []
     for g in prod['groups']:
         b = prod['group_band'].get(g) or ''
@@ -1677,15 +2046,20 @@ def write_product(prod, path, meta=None):
             lines.append(dict(LINE=line_tag(k), REST_UM=REST[k], GROUP=group_tag(g), BAND=b,
                               TIED_TO=line_tag(tie[0]) if tie else '', RATIO=tie[1] if tie else np.nan,
                               LSF_KMS=sigma_lsf_kms(b) if b else np.nan))
-    hdus.append(fits.BinTableHDU(Table.from_pandas(pd.DataFrame(lines)), name='LINES'))
+    hdus.append(table_hdu(pd.DataFrame(lines), 'LINES', {'REST_UM': 'um', 'LSF_KMS': 'km s-1'}))
     cfgd = json.loads(cfg.to_json())
     hdus.append(fits.BinTableHDU(Table.from_pandas(pd.DataFrame(
         dict(KEY=list(cfgd), VALUE=[json.dumps(v) for v in cfgd.values()]))), name='CONFIG'))
     for b, nz in prod['noise'].items():
-        t = fits.BinTableHDU(Table.from_pandas(pd.DataFrame(dict(WAVE=prod['stacks'][b].wave, SD1=nz.sd1, BG=nz.bg))),
-                             name=f'NOISE_{b}')
-        t.header['ERRSCALE'] = nz.err_scale
-        t.header['NSKY'] = nz.n_sky
+        bge = nz.bg_err if nz.bg_err is not None else np.zeros_like(nz.bg)
+        t = table_hdu(pd.DataFrame(dict(WAVE=prod['stacks'][b].wave, SD1=nz.sd1, BG=nz.bg, BG_ERR=bge)),
+                      f'NOISE_{b}', {'WAVE': 'um', 'SD1': native, 'BG': native, 'BG_ERR': native})
+        t.header['ERRSCALE'] = (nz.err_scale, 'null-test NMAD, all region sizes')
+        t.header['ERRSCN'] = (json.dumps([[round(float(a), 1), round(float(s), 4)] for a, s in nz.scale_n]),
+                              '[[N, scale]] by region size')
+        t.header['NSKY'] = (nz.n_sky, 'spaxels of the noise model')
+        t.header['SKYSRC'] = (nz.sky_src, 'sky: galaxy excluded; all: too few left')
+        t.header['NCORRSRC'] = (nz.ncorr_src, 'c(N) from: sky / all / default')
         t.header['RESOLV'] = (float(BAND_RESOLUTION.get(b, 3500.0)), 'resolving power used for the LSF')
         t.header['NCORR'] = json.dumps([[int(a), round(float(c), 4)] for a, c, _ in nz.ncorr])
         hdus.append(t)
@@ -1693,20 +2067,33 @@ def write_product(prod, path, meta=None):
     tmp = f'{path}.{os.getpid()}.tmp'
     try:
         fits.HDUList(hdus).writeto(tmp, overwrite=True)
-        os.replace(tmp, path)
+        _replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.remove(tmp)
     return path
 
 
+def _replace(src, dst, tries=6, wait=0.5):
+    """os.replace, retried while the destination is open elsewhere (Windows, OneDrive, the app)."""
+    for i in range(tries):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(wait * (i + 1))
+
+
 def read_product(path):
     """dict(maps={EXTNAME: 2-D}, bins, total (DataFrames or None), header (dict), config (Config),
     lines (DataFrame), rest {line: micron}, noise={band: dict(wave, sd1, bg, err_scale, ncorr,
-    resolving_power)}, path)."""
+    resolving_power)}, clipped={(bin, group tag): array of clipped wavelengths}, path)."""
     from astropy.io import fits
     from astropy.table import Table
-    out = dict(maps={}, bins=None, total=None, header={}, config=None, lines=None, rest=None, noise={}, path=path)
+    out = dict(maps={}, bins=None, total=None, header={}, config=None, lines=None, rest=None, noise={},
+               clipped={}, path=path)
     with fits.open(path) as h:
         out['header'] = {k: h[0].header[k] for k in h[0].header if k and k not in ('HISTORY', 'COMMENT')}
         for e in h[1:]:
@@ -1722,6 +2109,9 @@ def read_product(path):
                 elif e.name == 'LINES':
                     out['lines'] = t
                     out['rest'] = rest_from_lines(t)
+                elif e.name == 'CLIPPED':
+                    for (b_id, g), sub in t.groupby(['BIN', 'GROUP']):
+                        out['clipped'][(int(b_id), str(g).strip())] = sub['WAVE'].to_numpy(float)
                 elif e.name == 'CONFIG':
                     try:
                         out['config'] = Config.from_json({k: json.loads(v) for k, v in zip(t['KEY'], t['VALUE'])})
@@ -1731,11 +2121,40 @@ def read_product(path):
                     nc = json.loads(e.header.get('NCORR', '[]'))
                     out['noise'][e.name[6:]] = dict(
                         wave=t['WAVE'].to_numpy(), sd1=t['SD1'].to_numpy(), bg=t['BG'].to_numpy(),
+                        bg_err=t['BG_ERR'].to_numpy() if 'BG_ERR' in t else None,
                         err_scale=float(e.header.get('ERRSCALE', 1.0)), ncorr=[(a, c, 0) for a, c in nc],
+                        scale_n=[tuple(x) for x in json.loads(e.header.get('ERRSCN', '[]'))],
                         resolving_power=float(e.header.get('RESOLV', np.nan)))
             elif e.data is not None and e.data.ndim == 2:
                 out['maps'][e.name] = np.array(e.data)
+    for b, nz in out['noise'].items():
+        nz['rel'] = out['maps'].get(f'RELNOISE_{b}')
     return out
+
+
+def used_pixels(product, wave, bin_id, group, z_ref=None):
+    """Bool mask of `wave` with the pixels the final fit of (bin, group) used: the group's fit window
+    minus the clipped pixels (bin_id < 0: TOTAL).  Finite data are checked by the caller."""
+    cfg = product.get('config') or Config()
+    hdr = product['header']
+    z = hdr.get('Z_REF') if z_ref is None else z_ref
+    rest = product.get('rest') or REST
+    lines = GROUPS[group]['lines']
+    lo = (min(rest[k] for k in lines) - cfg.win_pad) * (1 + z)
+    hi = (max(rest[k] for k in lines) + cfg.win_pad) * (1 + z)
+    m = (wave > lo) & (wave < hi)
+    clip = product.get('clipped', {}).get((int(bin_id), group_tag(group)))
+    if clip is not None and len(clip):
+        m &= ~np.isin(wave, clip)
+    return m
+
+
+def noise_from_product(nz):
+    """BandNoise from a read_product noise entry (what region_spectrum needs)."""
+    rel = nz.get('rel')
+    return BandNoise(sd1=np.asarray(nz['sd1'], float), bg=np.asarray(nz['bg'], float), ncorr=nz['ncorr'],
+                     err_scale=float(nz['err_scale']), scale_n=list(nz.get('scale_n') or []),
+                     rel=None if rel is None else np.asarray(rel, float))
 
 
 def product_bin_spectrum(product, stack, band, bin_id, edge_margin=None):
@@ -1751,8 +2170,7 @@ def product_bin_spectrum(product, stack, band, bin_id, edge_margin=None):
     if not sel.any():
         return None
     cfg = product.get('config') or Config()
-    noise = BandNoise(sd1=np.asarray(nz['sd1'], float), bg=np.asarray(nz['bg'], float), ncorr=nz['ncorr'],
-                      err_scale=nz['err_scale'])
+    noise = noise_from_product(nz)
     with warnings.catch_warnings():
         warnings.simplefilter('ignore')
         spec, err = region_spectrum(stack.cube, sel, noise, cfg.edge_margin if edge_margin is None else edge_margin)
@@ -1820,6 +2238,7 @@ def _worker_init(root, variant):
     engine.load(root)
     lines.sync(engine.REST_UM)
     sync_rest(engine.REST_UM, engine.BAND_RESOLUTION)
+    sync_sky(root)
     _W['cat'] = Catalog.build(root, variant)
 
 
@@ -1849,7 +2268,7 @@ def _run_one(key, out_dir, cfg_json, overwrite):
     if os.path.exists(path) and not overwrite:
         try:
             r = record_from_header(path)
-            if str(r.get('schema', '')) == SCHEMA:
+            if str(r.get('schema', '')) == SCHEMA and str(r.get('pipeline_version', '')) == PIPELINE_VERSION:
                 return r
         except Exception:
             pass
@@ -1869,9 +2288,10 @@ def _run_one(key, out_dir, cfg_json, overwrite):
 
 
 def write_index(out_dir, records=(), variant='', cfg=None):
-    """index.json / index.csv of out_dir: one record per product (read from its header) plus the
-    galaxies without a product (no redshift, errors) from `records` and the previous index; written
-    atomically."""
+    """index.json / index.csv of out_dir: one record per product (read from its header), the
+    galaxies without a product (no redshift, errors) of the previous index, and - winning over
+    everything - this run's no_redshift / error `records` (a file left from an earlier run is then
+    reported as stale_file / stale_date, never as this run's result); written atomically."""
     import glob
     import pandas as pd
     path_json = os.path.join(out_dir, 'index.json')
@@ -1883,9 +2303,6 @@ def write_index(out_dir, records=(), variant='', cfg=None):
                     recs[r['key']] = r
     except (OSError, ValueError, AttributeError):
         pass
-    for r in records:
-        if r.get('status') in ('no_redshift', 'error'):
-            recs[r['key']] = {k: v for k, v in r.items() if k != 'traceback'}
     for p in sorted(glob.glob(os.path.join(out_dir, '*_voronoi.fits'))):
         try:
             r = record_from_header(p)
@@ -1893,6 +2310,13 @@ def write_index(out_dir, records=(), variant='', cfg=None):
             continue
         if r.get('key'):
             recs[r['key']] = r
+    for r in records:
+        if r.get('status') in ('no_redshift', 'error'):
+            old = recs.get(r['key'])
+            new = {k: v for k, v in r.items() if k != 'traceback'}
+            if old is not None and old.get('file') and old.get('status') not in ('no_redshift', 'error'):
+                new.update(stale_file=old['file'], stale_date=old.get('date'), stale_status=old.get('status'))
+            recs[r['key']] = new
 
     def clean(v):
         if isinstance(v, float) and not np.isfinite(v):
@@ -1905,9 +2329,13 @@ def write_index(out_dir, records=(), variant='', cfg=None):
     for name, write in (('index.json', lambda f: json.dump(doc, f, indent=1)),
                         ('index.csv', lambda f: pd.DataFrame(rows).to_csv(f, index=False, lineterminator='\n'))):
         tmp = os.path.join(out_dir, f'{name}.{os.getpid()}.tmp')
-        with open(tmp, 'w', encoding='utf-8', newline='') as f:
-            write(f)
-        os.replace(tmp, os.path.join(out_dir, name))
+        try:
+            with open(tmp, 'w', encoding='utf-8', newline='') as f:
+                write(f)
+            _replace(tmp, os.path.join(out_dir, name))
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
 
 
 def main(argv=None):
@@ -1926,6 +2354,11 @@ def main(argv=None):
     ap.add_argument('--groups', default=','.join(Config.groups), help='line groups, e.g. ha,oiii,hb,sii')
     ap.add_argument('--no-bgsub', action='store_true', help='do not subtract the residual background')
     a = ap.parse_args(argv)
+    for stream in (sys.stdout, sys.stderr):   # 'Hα' in messages must not kill a redirected run (cp1252)
+        try:
+            stream.reconfigure(errors='backslashreplace')
+        except (AttributeError, ValueError):
+            pass
 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from empower_explorer import config as ee_config
@@ -1954,12 +2387,18 @@ def main(argv=None):
     t0 = time.time()
     records = []
 
+    def index():
+        try:
+            write_index(out_dir, records, variant, cfg)
+        except OSError as e:                     # a locked index must not stop the batch
+            print(f'(index not written: {e})', flush=True)
+
     def report(i, r):
         records.append(r)
         print(f'[{i + 1}/{len(keys)}] {r["key"]:22s} {str(r.get("status")):13s} bins={str(r.get("nbins")):<4} '
               f'{r.get("message", "")}', flush=True)
         if (i + 1) % 20 == 0:
-            write_index(out_dir, records, variant, cfg)
+            index()
     if a.workers > 1 and len(keys) > 1:
         from concurrent.futures import ProcessPoolExecutor, as_completed
         with ProcessPoolExecutor(a.workers, initializer=_worker_init, initargs=(root, variant)) as ex:
@@ -1969,7 +2408,7 @@ def main(argv=None):
     else:
         for i, k in enumerate(keys):
             report(i, _run_one(k, out_dir, cfg.to_json(), a.overwrite))
-    write_index(out_dir, records, variant, cfg)
+    index()
     n_err = sum(r.get('status') == 'error' for r in records)
     print(f'done: {len(records) - n_err}/{len(records)} without error in {time.time() - t0:.0f} s · index: {out_dir}',
           flush=True)
