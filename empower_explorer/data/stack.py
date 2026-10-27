@@ -58,7 +58,6 @@ class BandStack:
 
 def load_band_stack(infos):
     """Stack the cubes `infos` (scan infos of ONE galaxy and band) -> BandStack."""
-    engine.require()
     ks = engine.ks
     infos = sorted(infos, key=lambda i: i['path'])        # same order as kmos_sample (sorted glob)
     cubes, stats, wcss, wave, bunit, header0 = [], [], [], None, '', {}

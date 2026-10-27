@@ -1416,7 +1416,7 @@ class SpectrumTab(QWidget):
         s = self.state
         z = self._z
         f, _ = self._frame()
-        sky = analysis.sky_lines(s.root) if s.options.get('sky_lines') and s.root else np.array([])
+        sky = analysis.sky_lines() if s.options.get('sky_lines') else np.array([])
         for p in self.panels:
             if z is None:
                 p.placeholder('no redshift')
@@ -1479,8 +1479,8 @@ class SpectrumTab(QWidget):
             spans = _merge_spans([sp for b in bands for sp in analysis.telluric_spans(s.stacks[b])])
             spans = [(a / f, b / f) for a, b in spans]
         sky = np.array([])
-        if s.options.get('sky_lines') and s.root and ranges:
-            sl = analysis.sky_lines(s.root)
+        if s.options.get('sky_lines') and ranges:
+            sl = analysis.sky_lines()
             sky = sl[np.any([(sl >= a) & (sl <= b) for a, b in ranges], axis=0)] / f if len(sl) else sl
         markers = []
         if z:

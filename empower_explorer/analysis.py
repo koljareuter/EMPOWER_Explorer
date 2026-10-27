@@ -10,13 +10,12 @@ Pixel coordinates: x = column, y = row, 0-based, of a BandStack grid (cube[:, y,
     x, y = line_peak_center(stack, z, 'Ha')             # notebook Hα-peak centring
     maps = spaxel_fit_maps(stack, z, 'Ha')              # per-spaxel flux/S/N/Δv/σ/W80 (slow: worker)
 """
-import os
 import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from empower_explorer import engine, lines
+from empower_explorer import config, engine, lines
 from empower_explorer.lines import C_KMS, FIT_LINES, REST
 
 W80_PER_SIGMA = 2.5631        # W80 of a Gaussian = 2 x 1.2816 sigma
@@ -90,7 +89,6 @@ def extract_spectrum(stack, x, y, r, method='sum', subtract_bg=False, min_covera
                     fewer than half of the aperture spaxels are valid.
     method 'mean' : inverse-variance weighted mean per spaxel (STAT), as the old KMOS viewer.
     The fit noise (`noise`) is line_snr.noise_from_cube of the same aperture, scaled like `flux`."""
-    engine.require()
     mask = aperture_mask(stack.cube.shape[1:], x, y, r) & (stack.coverage > min_coverage)
     n = int(mask.sum())
     nz = stack.cube.shape[0]
@@ -227,7 +225,6 @@ def fit_lines(spec, z, keys=None, anchor=None):
     """Calibrated line measurement of one spectrum (line_snr.measure_lines: one free anchor line,
     all others forced to its velocity and width).  anchor=(dv, sigma_int) from another band.
     Returns ({key: LineFit}, FitInfo)."""
-    engine.require()
     keys = keys if keys is not None else covered_lines(spec.wave[np.isfinite(spec.flux)], z) \
         if np.isfinite(spec.flux).any() else []
     if not keys or z is None:
@@ -415,11 +412,11 @@ def telluric_spans(stack, thr=0.5):
 _SKY = {}
 
 
-def sky_lines(root, keep_fraction=0.3):
-    """Vacuum wavelengths [micron] of the bright OH sky lines in scripts/sky_lines_uves_oliva.csv:
-    the brightest `keep_fraction` of each source catalogue (the file mixes absolute Hanuschik 2003
-    fluxes with relative Oliva+15 intensities, so one flux threshold would not work)."""
-    path = os.path.join(root, 'scripts', 'sky_lines_uves_oliva.csv')
+def sky_lines(keep_fraction=0.3):
+    """Vacuum wavelengths [micron] of the bright OH sky lines in scripts/sky_lines_uves_oliva.csv
+    (shipped with the app): the brightest `keep_fraction` of each source catalogue (the file mixes
+    absolute Hanuschik 2003 fluxes with relative Oliva+15 intensities, so one flux threshold would not work)."""
+    path = config.bundled('sky_lines_uves_oliva.csv')
     if path in _SKY:
         return _SKY[path]
     out = np.array([])
@@ -462,7 +459,6 @@ def spaxel_fit_maps(stack, z, key='Ha', binning=1, min_coverage=0.5, progress=No
     Returns {'flux', 'flux_err', 'snr', 'dv', 'sigma_int', 'w80', 'detected'} arrays on the stack
     grid (blocks filled with the block value).  'snr' is the SEARCHED (uncalibrated) fit S/N;
     'detected' applies the calibrated anchor threshold.  ~5 ms per fit: run in a worker."""
-    engine.require()
     ny, nx = stack.cube.shape[1:]
     names = ('flux', 'flux_err', 'snr', 'dv', 'sigma_int', 'w80', 'detected')
     out = {n: np.full((ny, nx), np.nan) for n in names}

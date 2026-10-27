@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If results obtained with EMPOWER Explorer or its line maps appear in a publication, please cite it as below."
+title: "EMPOWER Explorer"
+type: software
+version: 1.1.0
+authors:
+  - family-names: Reuter
+    given-names: Kolja
+    affiliation: "European Southern Observatory (ESO)"
+repository-code: "https://github.com/koljareuter/EMPOWER_Explorer"
+license: MIT
+keywords:
+  - KMOS
+  - integral field spectroscopy
+  - emission lines
+  - Voronoi binning

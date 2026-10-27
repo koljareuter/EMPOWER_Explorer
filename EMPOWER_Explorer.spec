@@ -30,6 +30,7 @@ exe = EXE(
     a.datas,
     [],
     name='EMPOWER_Explorer',
+    icon='empower_explorer/assets/empower_icon.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

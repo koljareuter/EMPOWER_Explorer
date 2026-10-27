@@ -1,0 +1,181 @@
+field,arm_target_id,ra_deg,dec_deg,redshift,redshift_type,source_catalog,source_id,quality,separation_arcsec,public_redshift,public_redshift_type,public_source,public_source_id,public_quality,public_separation_arcsec
+cosmos,101639,150.133821,2.167743,0.7276,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.01,0.7276,spec,cosmos_specz_good,,4,0.005
+cosmos,101904,150.137242,2.167887,0.6788,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6788,spec,cosmos_specz_good,,4,0.005
+cosmos,85939,150.104142,2.071593,0.6362,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6362,spec,cosmos_specz_good,,4,0.004
+cosmos,87548,150.138712,2.06961,0.7268,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.009,0.7268,spec,cosmos_specz_good,,4,0.005
+cosmos,88166,150.135354,2.075669,0.7229,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.008,0.7229,spec,cosmos_specz_good,,4,0.005
+cosmos,88457,150.080017,2.097943,0.6756,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.005,0.6756,spec,cosmos_specz_good,,4,0.003
+cosmos,89034,150.086887,2.099884,0.7339,photo,cosmos2020c,710878,0,0.0,,,,,,
+cosmos,90397,150.09985,2.105737,0.7222,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.015,0.7222,spec,cosmos_specz_good,,4,0.0
+cosmos,90874,150.052062,2.126653,0.66292,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.007,0.66292,spec,cosmos_specz_good,,4,0.009
+cosmos,90963,150.134267,2.097844,0.72672,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.72672,spec,cosmos_specz_good,,4,0.004
+cosmos,91291,150.145392,2.096056,0.7272,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,95,0.007,0.7272,spec,cosmos_specz_good,,3,0.0
+cosmos,91628,150.106992,2.112173,0.6371,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,95,0.0,0.6371,spec,cosmos_specz_good,,3,0.008
+cosmos,91980,150.055625,2.13354,0.66486,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.005,0.66486,spec,cosmos_specz_good,,4,0.004
+cosmos,92754,150.1606,2.100995,0.62633,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.62633,spec,cosmos_specz_good,,4,0.003
+cosmos,93622,150.12055,2.121722,0.7259,spec,cosmos_specz_good,,2,0.009,,,,,,
+cosmos,94133,150.157192,2.111714,0.66592,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.66592,spec,cosmos_specz_good,,4,0.003
+cosmos,94901,150.101004,2.136659,0.6794,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,95,0.0,0.6794,spec,cosmos_specz_good,,3,0.0
+cosmos,97295,150.117342,2.144562,0.726,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.01,0.726,spec,cosmos_specz_good,,4,0.003
+cosmos,97505,150.071475,2.162346,0.6613,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6613,spec,cosmos_specz_good,,4,0.008
+cosmos,97719,150.093863,2.155705,0.727,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.011,0.727,spec,cosmos_specz_good,,4,0.006
+cosmos,98508,150.096429,2.160128,0.727,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,95,0.016,0.727,spec,cosmos_specz_good,,3,0.003
+cosmos,99134,150.158867,2.141988,0.6793,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.6793,spec,cosmos_specz_good,,4,0.003
+cdfs_targets_2.cat,15222,53.07745,-27.780219,0.741,spec,KMOS_CDFS_116.29EG.003_targets_only,MUSE-Wide/K20,3,0.0,0.741,spec,astrodeep_gs43,,,0.0
+cdfs_targets_2.cat,15250,53.091629,-27.782211,0.669,spec,KMOS_CDFS_116.29EG.003_targets_only,MUSE-Wide/Szokoly_2004,3,0.0,0.668,spec,astrodeep_gs43,,,0.004
+cdfs_targets_2.cat,15860,53.074208,-27.775411,0.67,spec,KMOS_CDFS_116.29EG.003_targets_only,MUSE-Wide/3D_HST,3,0.0,0.646,spec,astrodeep_gs43,,,0.007
+cdfs_targets_2.cat,17472,53.114158,-27.763769,0.727,spec,KMOS_CDFS_116.29EG.003_targets_only,MUSE-Wide/Ravikumar_2007,3,0.0,0.727,spec,astrodeep_gs43,,,0.007
+cdfs_targets_2.cat,17509,53.149171,-27.763631,0.737597,spec,KMOS_CDFS_116.29EG.003_targets_only,MUSE-UDF/Ravikumar_2007,3,0.003,0.738,spec,astrodeep_gs43,,,0.004
+cdfs_targets_2.cat,18479,53.050808,-27.75835,0.677469,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/K20,5,0.0,0.676,spec,astrodeep_gs43,,,0.005
+cdfs_targets_2.cat,18824,53.048742,-27.7521,0.67374,spec,KMOS_CDFS_116.29EG.003_targets_only,3D-HST/3D_HST,1,0.0,0.674,spec,astrodeep_gs43,,,0.006
+cdfs_targets_2.cat,19600,53.145342,-27.7446,0.677,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/K20,2,0.0,0.677,spec,astrodeep_gs43,,,0.005
+cdfs_targets_2.cat,20310,53.130542,-27.738611,0.605,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/K20,1,0.0,0.605,spec,astrodeep_gs43,,,0.007
+cdfs_targets_2.cat,20507,53.040092,-27.735919,0.832,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/3D_HST,2,0.0,0.733,spec,astrodeep_gs43,,,0.007
+cdfs_targets_2.cat,21695,53.1251,-27.729811,0.667762,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/Ravikumar_2007,4,0.0,0.675,spec,astrodeep_gs43,,,0.004
+cdfs_targets_2.cat,22737,53.072358,-27.718669,0.648,spec,kmos_verified,"KMOS IZ 2026-10-13: Halpha S/N 28 (dv +55), Hbeta S/N 6, [OIII]5007 S/N 5 at z=0.648; team z 0.6369 (q=1, 3D-HST/ACES_2012) shows no line",,,0.648,spec,astrodeep_gs43,,,0.007
+cdfs_targets_2.cat,22956,53.096058,-27.7073,0.7354,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/VIMOS_10_MR,4,0.0,0.733,spec,astrodeep_gs43,,,0.006
+cdfs_targets_2.cat,22992,53.047129,-27.70905,0.6068,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/VVDS_Final,4,0.0,0.607,spec,astrodeep_gs43,,,0.0
+cdfs_targets_2.cat,23248,53.141242,-27.710539,0.619202,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/Ravikumar_2007,5,0.0,0.624,spec,astrodeep_gs43,,,0.008
+cdfs_targets_2.cat,23420,53.055121,-27.711381,0.60675,spec,KMOS_CDFS_116.29EG.003_targets_only,DJA/Szokoly_2004,3,0.0,0.605,spec,astrodeep_gs43,,,0.006
+cdfs_targets_2.cat,23840,53.073421,-27.71595,0.646299,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/VIMOS_10_MR,4,0.003,0.648,spec,astrodeep_gs43,,,0.004
+cdfs_targets_2.cat,24999,53.0865,-27.687481,0.6832,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/VVDS_Final,3,0.0,0.683,spec,astrodeep_gs43,,,0.0
+cdfs_targets_2.cat,25089,53.151021,-27.689411,0.668,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/3D_HST,2,0.0,0.656,spec,astrodeep_gs43,,,0.004
+cdfs_targets_2.cat,25404,53.110821,-27.693261,0.538,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/VIMOS_10_MR,1,0.0,0.736,spec,astrodeep_gs43,,,0.004
+cdfs_targets_2.cat,26010,53.143592,-27.697069,0.6653,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/VIMOS_10_MR,4,0.0,0.668,spec,astrodeep_gs43,,,0.008
+cdfs_targets_2.cat,26172,53.135508,-27.699489,0.6817,spec,KMOS_CDFS_116.29EG.003_targets_only,Vaccari/VVDS_Final,5,0.003,0.682,spec,astrodeep_gs43,,,0.008
+cosmos_0.6_0.8_h21.4.cat,1120854,149.933375,2.477101,0.69524,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.69524,spec,cosmos_specz_good,,4,0.004
+cosmos_0.6_0.8_h21.4.cat,1123917,149.939712,2.482834,0.69539,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.69539,spec,cosmos_specz_good,,4,0.0
+cosmos_0.6_0.8_h21.4.cat,1132608,149.893771,2.490923,0.7182,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,95,0.0,0.7182,spec,cosmos_specz_good,,3,0.003
+cosmos_0.6_0.8_h21.4.cat,1137103,149.900254,2.495527,0.736,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.736,spec,cosmos_specz_good,,4,0.007
+cosmos_0.6_0.8_h21.4.cat,1141261,149.940521,2.498532,0.6925,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6925,spec,cosmos_specz_good,,4,0.004
+cosmos_0.6_0.8_h21.4.cat,1147707,149.945671,2.504191,0.66684,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.66684,spec,cosmos_specz_good,,4,0.005
+cosmos_0.6_0.8_h21.4.cat,1157632,149.927683,2.515994,0.67141,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.67141,spec,cosmos_specz_good,,4,0.0
+cosmos_0.6_0.8_h21.4.cat,1168518,149.912538,2.527191,0.7368,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7368,spec,cosmos_specz_good,,4,0.006
+cosmos_0.6_0.8_h21.4.cat,1170582,149.945379,2.527787,0.6915,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6915,spec,cosmos_specz_good,,4,0.008
+cosmos_0.6_0.8_h21.4.cat,1180013,149.9537,2.534858,0.731,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,95,0.0,0.731,spec,cosmos_specz_good,,3,0.0
+cosmos_0.6_0.8_h21.4.cat,1192752,149.942625,2.547754,0.7244,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7244,spec,cosmos_specz_good,,4,0.004
+cosmos_0.6_0.8_h21.4.cat,1194730,149.918771,2.551719,0.698,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.698,spec,cosmos_specz_good,,4,0.005
+cosmos_0.6_0.8_h21.4.cat,1195224,149.911946,2.551569,0.7554,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7554,spec,cosmos_specz_good,,4,0.006
+cosmos_0.6_0.8_h21.4.cat,1200282,149.950279,2.556496,0.7983,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,95,0.0,0.7983,spec,cosmos_specz_good,,3,0.005
+cosmos_0.6_0.8_h21.4.cat,1215485,149.962233,2.567785,0.73648,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.73648,spec,cosmos_specz_good,,4,0.004
+cosmos_0.6_0.8_h21.4.cat,1216183,149.917262,2.572632,0.698,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.698,spec,cosmos_specz_good,,4,0.004
+cosmos_0.6_0.8_h21.4.cat,1220318,149.887838,2.575491,0.693,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.693,spec,cosmos_specz_good,,4,0.003
+cosmos_0.6_0.8_h21.4.cat,1224797,149.926825,2.580608,0.699,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.699,spec,cosmos_specz_good,,4,0.005
+cosmos_0.6_0.8_h21.4.cat,1226372,149.9031,2.582091,0.695,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.695,spec,cosmos_specz_good,,4,0.007
+cosmos_0.6_0.8_h21.4.cat,recenter1,149.878358,2.544274,,,,,,,,,,,,
+cosmos_0.6_0.8_h21.4.cat,recenter2,149.944858,2.518981,,,,,,,,,,,,
+SPT2040_Hbeta_OIII,B1,310.292083,-44.826,1.476,spec,simbad,[BAR2014] J204110.1-444933.6,z,0.0,,,,,,
+SPT2040_Hbeta_OIII,B2,310.250583,-44.840333,1.4777,spec,simbad,[BAR2014] J204100.1-445025.2,z,0.0,,,,,,
+SPT2040_Hbeta_OIII,B3,310.237375,-44.870472,1.4842,spec,simbad,[BAR2014] J204057.0-445213.7,z,0.0,,,,,,
+SPT2040_Hbeta_OIII,B4,310.253833,-44.887694,1.4765,spec,simbad,[BAR2014] J204100.9-445315.7,z,0.0,,,,,,
+SPT2040_Hbeta_OIII,B6,310.209458,-44.839028,1.48,spec,simbad,[BAR2014] J204050.3-445020.5,z,0.0,,,,,,
+SPT2040_Hbeta_OIII,B7,310.202167,-44.839278,1.4808,spec,simbad,[BAR2014] J204048.5-445021.4,z,0.0,,,,,,
+SPT2040_Hbeta_OIII,B9,310.184333,-44.856667,1.4782,spec,simbad,[BAR2014] J204044.2-445124.0,z,0.0,,,,,,
+SPT2040_Hbeta_OIII,H128R,310.238679,-44.890087,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H129R,310.226533,-44.890305,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H15,310.227721,-44.858107,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H17,310.236629,-44.857589,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H20,310.2544,-44.855761,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H25,310.236388,-44.859841,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H28,310.228733,-44.861457,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H30,310.243667,-44.860967,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H31,310.223792,-44.864274,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H33,310.232792,-44.863631,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H43,310.236504,-44.866953,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H45,310.24235,-44.868403,1.4789,spec,simbad,[BAR2014] J204058.1-445206.7,z,0.518,,,,,,
+SPT2040_Hbeta_OIII,H46,310.253342,-44.867098,1.4786,cluster,cluster_z,,,,,,,,,
+SPT2040_Hbeta_OIII,H63,310.23315,-44.859716,1.4786,cluster,cluster_z,,,,,,,,,
+XMM2215_EMPOWER.cat,1006,333.984162,-17.630537,1.4559,spec,simbad,[BMC2017] XMM2215 1006,z,0.046,,,,,,
+XMM2215_EMPOWER.cat,1047,334.000396,-17.64517,1.463,spec,simbad,[HSS2009b] 1047,z,0.015,,,,,,
+XMM2215_EMPOWER.cat,2,333.989625,-17.633472,1.45,spec,simbad,[BMC2017] XMM2215  919,z,0.0,,,,,,
+XMM2215_EMPOWER.cat,29284,333.970538,-17.652161,1.462,spec,simbad,[HKK2011] 3,z,0.643,,,,,,
+XMM2215_EMPOWER.cat,29609,334.001554,-17.649384,1.46,spec,simbad,[HKK2017] ALMA.B3.17,z,0.129,,,,,,
+XMM2215_EMPOWER.cat,30183,333.997821,-17.643737,1.4569,spec,simbad,[HCS2007] 18,z,0.096,,,,,,
+XMM2215_EMPOWER.cat,30473,333.987133,-17.642685,1.448,spec,simbad,[HKK2011] 13,z,0.274,,,,,,
+XMM2215_EMPOWER.cat,31179,333.988283,-17.635485,1.4502,spec,simbad,[HCS2007] 11,z,0.078,,,,,,
+XMM2215_EMPOWER.cat,31526,334.010663,-17.632313,1.461,spec,simbad,[HKK2011] 5,z,0.298,,,,,,
+XMM2215_EMPOWER.cat,31746,334.001583,-17.6307,1.451,spec,simbad,SSTU J221600.38-173750.5,z,0.465,,,,,,
+XMM2215_EMPOWER.cat,31863,333.990446,-17.629349,1.452,spec,simbad,[BMC2017] XMM2215 1038,z,0.186,,,,,,
+XMM2215_EMPOWER.cat,32152,333.994771,-17.62798,1.46,spec,simbad,[HLS2010] 38,z,0.105,,,,,,
+XMM2215_EMPOWER.cat,32400,334.000454,-17.626049,1.454,spec,simbad,[HSS2009b] 591,z,0.235,,,,,,
+XMM2215_EMPOWER.cat,32650,334.030983,-17.623657,1.461,spec,simbad,[HKK2011] 11,z,0.102,,,,,,
+XMM2215_EMPOWER.cat,33327,333.989117,-17.617768,1.461,spec,simbad,[HKK2011] 9,z,0.149,,,,,,
+XMM2215_EMPOWER.cat,34305,333.98395,-17.610543,1.455,spec,simbad,[HSS2009b] 96,z,0.232,,,,,,
+XMM2215_EMPOWER.cat,8,333.992617,-17.6395,1.457,spec,simbad,SSTU J221558.22-173822.1,z,0.029,,,,,,
+XMM2215_EMPOWER.cat,99991,333.9956,-17.6336,1.457,cluster,cluster_z,,,,,,,,,
+XMM2215_EMPOWER.cat,R_28,334.006363,-17.6889,1.457,cluster,cluster_z,,,,,,,,,
+XMM2215_EMPOWER.cat,R_29,333.9984,-17.57928,1.457,cluster,cluster_z,,,,,,,,,
+cosmos_target_legac.cat,2944,149.900750,2.474329,0.73033,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73033,spec,cosmos_specz_good,,4,0.003
+cosmos_target_legac.cat,2999,149.945200,2.485672,0.7341,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7341,spec,cosmos_specz_good,,4,0.004
+cosmos_target_legac.cat,3006,149.947454,2.491762,0.7364,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.7364,spec,cosmos_specz_good,,4,0.008
+cosmos_target_legac.cat,3017,149.927558,2.495926,0.7334,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7334,spec,cosmos_specz_good,,4,0.004
+cosmos_target_legac.cat,3044,149.909808,2.504589,0.73075,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73075,spec,cosmos_specz_good,,4,0.008
+cosmos_target_legac.cat,3050,149.920004,2.509244,0.73771,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73771,spec,cosmos_specz_good,,4,0.0
+cosmos_target_legac.cat,3055,149.914296,2.510733,0.72591,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.72591,spec,cosmos_specz_good,,4,0.009
+cosmos_target_legac.cat,3059,149.920229,2.514235,0.69801,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.69801,spec,cosmos_specz_good,,4,0.009
+cosmos_target_legac.cat,3092,149.931871,2.528072,0.73739,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73739,spec,cosmos_specz_good,,4,0.008
+cosmos_target_legac.cat,3107,149.913617,2.534513,0.7327,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7327,spec,cosmos_specz_good,,4,0.0
+cosmos_target_legac.cat,3162,149.945879,2.560839,0.7334,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7334,spec,cosmos_specz_good,,4,0.007
+cosmos_target_legac.cat,3163,149.903479,2.559568,0.6978,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6978,spec,cosmos_specz_good,,4,0.003
+cosmos_target_legac.cat,3174,149.913696,2.565588,0.70131,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.70131,spec,cosmos_specz_good,,4,0.0
+cosmos_target_legac.cat,3590,149.888846,2.472127,0.7334,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7334,spec,cosmos_specz_good,,4,0.007
+cosmos_target_legac.cat,3613,149.899567,2.487131,0.7161,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7161,spec,cosmos_specz_good,,4,0.007
+cosmos_target_legac.cat,3638,149.863029,2.497415,0.73237,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73237,spec,cosmos_specz_good,,4,0.0
+cosmos_target_legac.cat,3645,149.889817,2.505614,0.73232,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.73232,spec,cosmos_specz_good,,4,0.0
+cosmos_target_legac.cat,3660,149.887458,2.513129,0.73547,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73547,spec,cosmos_specz_good,,4,0.004
+cosmos_target_legac.cat,3662,149.857729,2.515907,0.7301,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7301,spec,cosmos_specz_good,,4,0.005
+cosmos_target_legac.cat,3671,149.876721,2.518719,0.7297,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7297,spec,cosmos_specz_good,,4,0.004
+cosmos_target_1.cat,2944,149.900750,2.474329,0.73033,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73033,spec,cosmos_specz_good,,4,0.003
+cosmos_target_1.cat,2999,149.945200,2.485672,0.7341,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7341,spec,cosmos_specz_good,,4,0.004
+cosmos_target_1.cat,3006,149.947454,2.491762,0.7364,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.7364,spec,cosmos_specz_good,,4,0.008
+cosmos_target_1.cat,3017,149.927558,2.495926,0.7334,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7334,spec,cosmos_specz_good,,4,0.004
+cosmos_target_1.cat,3044,149.909808,2.504589,0.73075,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73075,spec,cosmos_specz_good,,4,0.008
+cosmos_target_1.cat,3050,149.920004,2.509244,0.73771,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73771,spec,cosmos_specz_good,,4,0.0
+cosmos_target_1.cat,3055,149.914296,2.510733,0.72591,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.72591,spec,cosmos_specz_good,,4,0.009
+cosmos_target_1.cat,3059,149.920229,2.514235,0.69801,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.69801,spec,cosmos_specz_good,,4,0.009
+cosmos_target_1.cat,3092,149.931871,2.528072,0.73739,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73739,spec,cosmos_specz_good,,4,0.008
+cosmos_target_1.cat,3107,149.913617,2.534513,0.7327,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7327,spec,cosmos_specz_good,,4,0.0
+cosmos_target_1.cat,3162,149.945879,2.560839,0.7334,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7334,spec,cosmos_specz_good,,4,0.007
+cosmos_target_1.cat,3163,149.903479,2.559568,0.6978,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6978,spec,cosmos_specz_good,,4,0.003
+cosmos_target_1.cat,3174,149.913696,2.565588,0.70131,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.70131,spec,cosmos_specz_good,,4,0.0
+cosmos_target_1.cat,3590,149.888846,2.472127,0.7334,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7334,spec,cosmos_specz_good,,4,0.007
+cosmos_target_1.cat,3613,149.899567,2.487131,0.7161,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7161,spec,cosmos_specz_good,,4,0.007
+cosmos_target_1.cat,3638,149.863029,2.497415,0.73237,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73237,spec,cosmos_specz_good,,4,0.0
+cosmos_target_1.cat,3645,149.889817,2.505614,0.73232,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.73232,spec,cosmos_specz_good,,4,0.0
+cosmos_target_1.cat,3660,149.887458,2.513129,0.73547,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73547,spec,cosmos_specz_good,,4,0.004
+cosmos_target_1.cat,3662,149.857729,2.515907,0.7301,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7301,spec,cosmos_specz_good,,4,0.005
+cosmos_target_1.cat,3671,149.876721,2.518719,0.7297,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7297,spec,cosmos_specz_good,,4,0.004
+goods_0.6_0.8_h21.6_lir.cat,10368,53.136342,-27.816540,0.671,spec,astrodeep_gs43,,,0.006,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,10372,53.089279,-27.817180,0.737,spec,astrodeep_gs43,,,0.003,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,12408,53.124750,-27.799210,0.671,spec,astrodeep_gs43,,,0.0,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,12984,53.148958,-27.799690,0.664,spec,astrodeep_gs43,,,0.005,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,16593,53.120750,-27.773210,0.737,spec,astrodeep_gs43,,,0.0,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,3901,53.152942,-27.877290,0.586,spec,astrodeep_gs43,,,0.008,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,4433,53.163129,-27.873040,0.761,spec,astrodeep_gs43,,,0.0,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,5338,53.173450,-27.865960,0.783,spec,astrodeep_gs43,,,0.0,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,5426,53.107329,-27.862170,0.636,spec,astrodeep_gs43,,,0.004,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,5513,53.126779,-27.861230,0.761,spec,astrodeep_gs43,,,0.0,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,6308,53.109171,-27.852920,0.657,spec,astrodeep_gs43,,,0.004,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,6467,53.133892,-27.851540,0.683,spec,astrodeep_gs43,,,0.006,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,7781,53.177900,-27.839200,0.768,spec,astrodeep_gs43,,,0.0,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,7945,53.113992,-27.837760,0.769,spec,astrodeep_gs43,,,0.007,,,,,,
+goods_0.6_0.8_h21.6_lir.cat,8352,53.110871,-27.833870,0.691,spec,astrodeep_gs43,,,0.004,,,,,,
+cosmos_0.6_0.8_h21.7.cat,1004169,150.214037,2.367516,0.6693,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6693,spec,cosmos_specz_good,,4,0.003
+cosmos_0.6_0.8_h21.7.cat,1008516,150.196450,2.370557,0.6849,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6849,spec,cosmos_specz_good,,4,0.006
+cosmos_0.6_0.8_h21.7.cat,1009602,150.210629,2.372943,0.6829,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,95,0.0,0.6829,spec,cosmos_specz_good,,3,0.004
+cosmos_0.6_0.8_h21.7.cat,1013513,150.185712,2.375274,0.68376,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.68376,spec,cosmos_specz_good,,4,0.004
+cosmos_0.6_0.8_h21.7.cat,1018429,150.175454,2.380421,0.6828,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6828,spec,cosmos_specz_good,,4,0.0
+cosmos_0.6_0.8_h21.7.cat,1018849,150.247171,2.379907,0.69663,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.69663,spec,cosmos_specz_good,,4,0.0
+cosmos_0.6_0.8_h21.7.cat,1034712,150.196992,2.395203,0.6665,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.6665,spec,cosmos_specz_good,,4,0.003
+cosmos_0.6_0.8_h21.7.cat,922665,150.178196,2.292120,0.74802,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.003,0.74802,spec,cosmos_specz_good,,4,0.004
+cosmos_0.6_0.8_h21.7.cat,945024,150.210162,2.311671,0.74828,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.052,0.74828,spec,cosmos_specz_good,,4,0.006
+cosmos_0.6_0.8_h21.7.cat,946486,150.189642,2.316012,0.75437,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.75437,spec,cosmos_specz_good,,4,0.003
+cosmos_0.6_0.8_h21.7.cat,946572,150.253854,2.315800,0.67985,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.67985,spec,cosmos_specz_good,,4,0.007
+cosmos_0.6_0.8_h21.7.cat,948198,150.173917,2.317318,0.73567,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.73567,spec,cosmos_specz_good,,4,0.003
+cosmos_0.6_0.8_h21.7.cat,955864,150.164675,2.322813,0.77439,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.77439,spec,cosmos_specz_good,,4,0.0
+cosmos_0.6_0.8_h21.7.cat,979170,150.161812,2.340935,0.6864,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.094,0.6864,spec,cosmos_specz_good,,4,0.0
+cosmos_0.6_0.8_h21.7.cat,979368,150.188792,2.344257,0.66201,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.66201,spec,cosmos_specz_good,,4,0.0
+cosmos_0.6_0.8_h21.7.cat,981564,150.215442,2.347067,0.7517,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.7517,spec,cosmos_specz_good,,4,0.008
+cosmos_0.6_0.8_h21.7.cat,989222,150.218275,2.352301,0.67936,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,95,0.003,0.67936,spec,cosmos_specz_good,,3,0.003
+cosmos_0.6_0.8_h21.7.cat,990719,150.169204,2.355006,0.688,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,97,0.0,0.688,spec,cosmos_specz_good,,4,0.008
+cosmos_0.6_0.8_h21.7.cat,998074,150.170496,2.362229,0.68639,spec,EMPOWER_COSMOS_matched_all_runs_exposure_summary_COSMOS2020,Khostovan,95,0.0,0.68639,spec,cosmos_specz_good,,3,0.006

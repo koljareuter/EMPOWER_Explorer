@@ -188,20 +188,24 @@ class MainWindow(QMainWindow):
         root = config.empower_root()
         if root is None:
             self.close_splash()
-            QMessageBox.information(self, APP_NAME, 'Please choose the EMPOWER_Analysis_and_presentation folder\n'
-                                                    '(it contains scripts/kmos_sample.py and the cube folders).')
+            QMessageBox.information(self, APP_NAME, 'Please choose the EMPOWER data folder\n'
+                                                    '(the folder that contains the reduction folders, '
+                                                    'e.g. kmos_comb_hyb_tell).')
             if not self.choose_root():
                 return
         else:
             self.use_root(root)
 
     def choose_root(self):
-        d = QFileDialog.getExistingDirectory(self, 'EMPOWER_Analysis_and_presentation folder',
+        d = QFileDialog.getExistingDirectory(self, 'EMPOWER data folder',
                                              self.state.root or os.path.expanduser('~'))
         if not d:
             return False
+        if not config.is_empower_root(d) and config.is_empower_root(os.path.dirname(d)):
+            d = os.path.dirname(d)          # a reduction folder was chosen: use the data folder above it
         if not config.is_empower_root(d):
-            QMessageBox.warning(self, APP_NAME, 'This folder has no scripts/kmos_sample.py and scripts/line_snr.py.')
+            QMessageBox.warning(self, APP_NAME, 'This folder contains no reduction folder '
+                                                '(kmos_comb_… with DATACUBE_COMBINED_*.fits).')
             return False
         if not self.use_root(d):
             return False
@@ -209,15 +213,15 @@ class MainWindow(QMainWindow):
         return True
 
     def use_root(self, root):
-        """Import the folder's EMPOWER scripts and scan its default reduction; False on failure."""
-        self.statusBar().showMessage('Loading the EMPOWER scripts (line_snr.py, kmos_sample.py) …')
+        """Use the EMPOWER data folder `root` and scan its default reduction; False on failure."""
+        self.statusBar().showMessage('Opening the EMPOWER data folder …')
         self._busy('Starting …', 0, 1)
-        QApplication.processEvents()        # paint the window before the ~1 s import
+        QApplication.processEvents()        # paint the window before the scan
         try:
             self.state.set_root(root)
         except engine.EngineError as e:
             self._busy('', 0, 0)
-            self._error('EMPOWER scripts', str(e))
+            self._error('EMPOWER data folder', str(e))
             return False
         self.root_label.setText(f'{root}  ')
         self.root_label.setToolTip(root)

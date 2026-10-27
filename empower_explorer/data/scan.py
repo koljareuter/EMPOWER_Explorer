@@ -68,7 +68,6 @@ def scan_variant(root, variant, progress=None):
     frames, shape, telluric, object, ra, dec, ...), duplicates (same input frames as a newer
     run) removed as in kmos_sample.drop_duplicate_cubes; each info has 'key' = 'FIELD tid'.
     problems: list of 'file: error' strings (unreadable cubes are skipped)."""
-    engine.require()
     variant_dir = os.path.join(root, variant)
     paths = sorted(glob.glob(os.path.join(variant_dir, '**', 'DATACUBE_COMBINED_*.fits'), recursive=True))
     cache_path = _cache_file(variant_dir)

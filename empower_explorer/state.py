@@ -83,7 +83,7 @@ class AppState(QObject):
 
     # ------------------------------------------------------------------ setup
     def set_root(self, root):
-        """Use the EMPOWER folder `root` (imports its scripts) - raises engine.EngineError."""
+        """Use the EMPOWER data folder `root` - raises engine.EngineError."""
         engine.load(root)
         lines.sync(engine.REST_UM)
         self.root = root

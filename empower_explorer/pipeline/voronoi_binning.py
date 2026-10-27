@@ -79,7 +79,8 @@ Naming (schema EMPOWER-VORONOI-2; unique ignoring case; map EXTNAMEs = BINS colu
 Units (FITS): fluxes 'adu s-1 um' (cube unit x micron; the models rebuild in these units); *_FLUX_CGS
 '10**(-17) erg s-1 cm-2' via the band's FLUXK (about 10 % absolute).  Velocities 'km s-1' relative to
 Z_REF; sigma intrinsic (LSF removed).  Pixel coordinates 0-based.  Provenance: PIPEVER, CODEHASH
-(sha256 of this file), GITHASH, package versions, input cubes (HISTORY).
+(sha256 of this file), SCRHASH (of the bundled analysis scripts), GITHASH, package versions, input
+cubes (HISTORY).
 """
 import argparse
 import datetime
@@ -232,11 +233,13 @@ def sync_rest(rest_um=None, band_resolution=None):
 SKY_UM = np.zeros(0)     # vacuum wavelengths [micron] of the bright OH sky lines (sync_sky)
 
 
-def sync_sky(root, keep_fraction=0.3):
-    """Load the bright OH sky lines from <root>/scripts/sky_lines_uves_oliva.csv (the brightest
-    keep_fraction of each catalogue, air -> vacuum).  Without them the sky-residual guard is off."""
+def sync_sky(path=None, keep_fraction=0.3):
+    """Load the bright OH sky lines (default: scripts/sky_lines_uves_oliva.csv shipped with the app; the
+    brightest keep_fraction of each catalogue, air -> vacuum).  Without them the sky-residual guard is off."""
     global SKY_UM
-    path = os.path.join(root, 'scripts', 'sky_lines_uves_oliva.csv') if root else ''
+    if path is None:
+        from empower_explorer.config import bundled
+        path = bundled('sky_lines_uves_oliva.csv')
     try:
         import pandas as pd
         df = pd.read_csv(path)
@@ -1886,9 +1889,18 @@ def _versions():
                 _VERSIONS[mod] = '?'
     try:                               # content hash of this file: identifies the exact pipeline code
         with open(os.path.abspath(__file__), 'rb') as f:
-            _VERSIONS['code'] = hashlib.sha256(f.read()).hexdigest()[:12]
+            _VERSIONS['code'] = hashlib.sha256(f.read().replace(b'\r\n', b'\n')).hexdigest()[:12]   # any checkout
     except OSError:
         _VERSIONS['code'] = '?'
+    try:                               # the analysis scripts behind the stacks and the line table
+        from empower_explorer.config import SCRIPTS_DIR
+        sha = hashlib.sha256()
+        for name in ('kmos_sample.py', 'line_snr.py', 'telluric_combined.py'):
+            with open(SCRIPTS_DIR / name, 'rb') as f:
+                sha.update(f.read().replace(b'\r\n', b'\n'))
+        _VERSIONS['scripts'] = sha.hexdigest()[:12]
+    except OSError:
+        _VERSIONS['scripts'] = '?'
     here = os.path.dirname(os.path.abspath(__file__))
     kw = dict(capture_output=True, text=True, timeout=5)
     if os.name == 'nt':
@@ -1932,6 +1944,7 @@ def write_product(prod, path, meta=None):
     h0['APPVER'] = (vers.get('app', '?'), 'EMPOWER Explorer version')
     h0['GITHASH'] = (vers.get('git', '?'), 'git commit of the repository')
     h0['CODEHASH'] = (vers.get('code', '?'), 'sha256[:12] of voronoi_binning.py')
+    h0['SCRHASH'] = (vers.get('scripts', '?'), 'sha256[:12] of the bundled analysis scripts')
     for k, key in (('numpy', 'NUMPYVER'), ('scipy', 'SCIPYVER'), ('astropy', 'ASTROVER'), ('vorbin', 'VORBINV')):
         h0[key] = vers.get(k, '?')
     h0['DATE'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
@@ -2238,7 +2251,7 @@ def _worker_init(root, variant):
     engine.load(root)
     lines.sync(engine.REST_UM)
     sync_rest(engine.REST_UM, engine.BAND_RESOLUTION)
-    sync_sky(root)
+    sync_sky()
     _W['cat'] = Catalog.build(root, variant)
 
 
@@ -2340,7 +2353,7 @@ def write_index(out_dir, records=(), variant='', cfg=None):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description='EMPOWER Voronoi binning + multi-Gaussian line maps')
-    ap.add_argument('--root', help='EMPOWER_Analysis_and_presentation folder (default: EMPOWER_ROOT or auto)')
+    ap.add_argument('--root', help='EMPOWER data folder (default: the app setting, EMPOWER_ROOT or auto)')
     ap.add_argument('--variant', help='reduction folder (default: the app default)')
     ap.add_argument('--galaxy', action='append', default=[], help="galaxy key, e.g. 'COSMOS 92754' (repeatable)")
     ap.add_argument('--all', action='store_true', help='all galaxies of the reduction')
@@ -2364,7 +2377,7 @@ def main(argv=None):
     from empower_explorer import config as ee_config
     root = a.root or os.environ.get('EMPOWER_ROOT') or ee_config.empower_root()
     if not root or not ee_config.is_empower_root(root):
-        ap.error('EMPOWER folder not found: use --root')
+        ap.error('EMPOWER data folder not found (a folder with kmos_comb_* reductions): use --root')
     variant = a.variant or ee_config.DEFAULT_VARIANT
     out_dir = a.out or default_out_dir(root, variant)
     os.makedirs(out_dir, exist_ok=True)

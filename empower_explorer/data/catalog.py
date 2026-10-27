@@ -11,13 +11,12 @@ galaxies columns: field, tid, name, ra, dec, z, z_type, z_quality, z_source, ban
 n_bands, texp_h, texp_<BAND>_h, n_cubes, telluric, has_maps, + the per-galaxy table columns
 (snr_ha, logM, logSFR, N2, O3, S2, EW_ha, sigma_ha, class_NII_BPT, whan, av, ...).
 """
-import os
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from empower_explorer import engine
+from empower_explorer import config, engine
 from empower_explorer.data.products import discover_products
 from empower_explorer.data.scan import scan_variant
 from empower_explorer.data.tables import galaxy_table, load_tables
@@ -49,13 +48,12 @@ class Redshift:
 
 class Catalog:
     def __init__(self, root, variant, infos, problems):
-        engine.require()
         self.root, self.variant = root, variant
         self.infos, self.problems = infos, problems
         self.cubes = {}
         for i in infos:
             self.cubes.setdefault(i['key'], {}).setdefault(i['band'], []).append(i)
-        zpath = os.path.join(root, 'scripts', 'target_redshifts.csv')
+        zpath = config.redshift_table(root)
         self.zcat = engine.ks.RedshiftCatalog(zpath)
         try:
             self.zcsv = pd.read_csv(zpath, dtype={'arm_target_id': str})

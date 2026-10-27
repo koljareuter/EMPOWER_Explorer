@@ -1443,7 +1443,7 @@ class MapsTab(QWidget):
         cfg = vb.Config(max_components=int(self.vcomp_spin.value()), target_sn=target,
                         target_fallback=tuple(t for t in vb.Config().target_fallback if t < target))
         vb.sync_rest(engine.REST_UM, engine.BAND_RESOLUTION)
-        vb.sync_sky(engine.ROOT)                 # OH lines for the sky-residual guard
+        vb.sync_sky()                            # OH lines for the sky-residual guard
         self._synced_root = engine.ROOT
         path = self._vfit_path()
         zr = st.redshift
