@@ -2,7 +2,7 @@
 
     branding.set_windows_app_id()      # before QApplication: own taskbar button + icon on Windows
     app.setWindowIcon(branding.app_icon())
-    splash = branding.splash_screen()  # big logo while the scripts load
+    splash = branding.splash_screen()  # big logo while the app starts
     label.setPixmap(branding.toolbar_logo(30))
 """
 import os

@@ -122,7 +122,7 @@ class MainWindow(QMainWindow):
         self.root_label.setProperty('role', 'dim')
         tb.addWidget(self.root_label)
         act = tb.addAction('Data folder…')
-        act.setToolTip('Choose the EMPOWER_Analysis_and_presentation folder')
+        act.setToolTip('Choose the EMPOWER data folder (the folder with the kmos_comb_* reduction folders)')
         act.triggered.connect(self.choose_root)
         act = tb.addAction('About')
         act.triggered.connect(self.about)
@@ -202,10 +202,10 @@ class MainWindow(QMainWindow):
         if not d:
             return False
         if not config.is_empower_root(d) and config.is_empower_root(os.path.dirname(d)):
-            d = os.path.dirname(d)          # a reduction folder was chosen: use the data folder above it
+            d = os.path.dirname(d)          # a reduction or product folder was chosen: use the data folder above it
         if not config.is_empower_root(d):
-            QMessageBox.warning(self, APP_NAME, 'This folder contains no reduction folder '
-                                                '(kmos_comb_… with DATACUBE_COMBINED_*.fits).')
+            QMessageBox.warning(self, APP_NAME, 'This folder contains no reduction folder with combined cubes\n'
+                                                '(kmos_comb_…/…/DATACUBE_COMBINED_*.fits).')
             return False
         if not self.use_root(d):
             return False
@@ -242,6 +242,7 @@ class MainWindow(QMainWindow):
         else:
             self._busy('', 0, 0)
             self._error('No combined cubes', f'No kmos_comb* folders with DATACUBE_COMBINED files in\n{root}')
+            return False                    # never remembered as the data folder
         return True
 
     def _variant_selected(self, i):

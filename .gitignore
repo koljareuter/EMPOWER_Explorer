@@ -10,9 +10,11 @@ venv/
 *.egg-info/
 .ipynb_checkpoints/
 
-# EMPOWER data stay in the data folder, never in the repository
+# EMPOWER data stay in the data folder, never in the repository (also if it lies inside the clone)
 *.fits
 kmos_voronoi_maps/
+EMPOWER_data/
+EMPOWER_Analysis_and_presentation/
 
 # system files
 Thumbs.db

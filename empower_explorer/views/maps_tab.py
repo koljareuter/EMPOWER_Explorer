@@ -1402,8 +1402,8 @@ class MapsTab(QWidget):
         return True, ''
 
     def _vfit_path(self):
-        st = self.state
-        return os.path.join(pipeline_dir(st.root, st.catalog.variant), vb.product_name(st.key))
+        cat = self.state.catalog          # its own folder: state.root may already be a newly chosen one
+        return os.path.join(pipeline_dir(cat.root, cat.variant), vb.product_name(self.state.key))
 
     def _update_vfit_controls(self):
         ok, why = self._vfit_possible()

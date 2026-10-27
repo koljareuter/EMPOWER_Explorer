@@ -2375,12 +2375,14 @@ def main(argv=None):
 
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     from empower_explorer import config as ee_config
-    root = a.root or os.environ.get('EMPOWER_ROOT') or ee_config.empower_root()
+    root = a.root or ee_config.empower_root()          # the app setting, then EMPOWER_ROOT, then auto
     if not root or not ee_config.is_empower_root(root):
         ap.error('EMPOWER data folder not found (a folder with kmos_comb_* reductions): use --root')
     variant = a.variant or ee_config.DEFAULT_VARIANT
+    known = [name for name, _ in ee_config.available_variants(root)]
+    if variant not in known:
+        ap.error(f'reduction {variant} not found in {root} (there: {", ".join(known)})')
     out_dir = a.out or default_out_dir(root, variant)
-    os.makedirs(out_dir, exist_ok=True)
     try:
         cfg = Config(max_components=a.max_components, target_sn=a.target_sn, binning=a.binning, grid=a.grid,
                      groups=tuple(g for g in a.groups.split(',') if g.strip()),
@@ -2390,6 +2392,7 @@ def main(argv=None):
         ap.error(str(e))
     if not a.all and not a.galaxy:
         ap.error('use --all or --galaxy')
+    os.makedirs(out_dir, exist_ok=True)
     _worker_init(root, variant)
     keys = list(_W['cat'].galaxies.index) if a.all else a.galaxy
     unknown = [k for k in keys if k not in _W['cat'].galaxies.index]

@@ -12,8 +12,9 @@ numbers.
 
 ### Windows: the .exe
 
-1. Download `EMPOWER_Explorer.exe` from the
-   [releases](https://github.com/koljareuter/EMPOWER_Explorer/releases).
+1. Download `EMPOWER_Explorer.exe` (version 1.1.0 or newer) from the
+   [releases](https://github.com/koljareuter/EMPOWER_Explorer/releases). Older releases still need
+   the analysis scripts in the data folder.
 2. Start it and choose the EMPOWER data folder when it asks. The app remembers the folder.
 
 ### Any system: Python 3.10 or newer
@@ -36,7 +37,7 @@ for it once.
 
 ```
 EMPOWER_data/
-├── kmos_comb_hyb_tell/                    a reduction: DATACUBE_COMBINED_*.fits (in any subfolders)
+├── kmos_comb_hyb_tell/                    a reduction: DATACUBE_COMBINED_*.fits and TELLEFF_*.fits
 ├── kmos_voronoi_maps/kmos_comb_hyb_tell/  line-map products of that reduction (optional)
 ├── kmos_galaxy_properties.csv             notebook tables (optional)
 ├── ...
@@ -45,23 +46,30 @@ EMPOWER_data/
 
 | In the data folder | Needed | Used for |
 |---|---|---|
-| `kmos_comb_hyb_tell/` (Hybrid + telluric, 357 cubes, 1.6 GB) | yes | everything; the default reduction |
+| `kmos_comb_hyb_tell/` (Hybrid + telluric, about 1.5 GB): copy the whole folder, the cubes and the `TELLEFF_*.fits` next to them, in any subfolders | yes | everything; the default reduction |
 | other `kmos_comb_*` / `kmos_proc_and_comb_*` folders | no | other reductions, chosen in the toolbar |
 | `kmos_voronoi_maps/<reduction>/` | no | line maps; otherwise made in the app or with the pipeline |
-| `kmos_galaxy_properties.csv`, `kmos_bpt_table.csv`, `kmos_hbeta_detection.csv`, `kmos_sample_overview.csv`, `halpha_census.csv`, `kmos_snr_distribution.csv` | no | Population and Data QA tabs |
+| `kmos_galaxy_properties.csv`, `kmos_bpt_table.csv`, `kmos_hbeta_detection.csv`, `kmos_sample_overview.csv`, `halpha_census.csv`, `kmos_snr_distribution.csv` | no | Population and Data QA tabs (empty without them) |
+| `kmos_*maps*.fits`, `kmos_*voronoi*.fits` (the notebooks' map products) | no | further map sources in the Maps tab |
 | `target_redshifts.csv` (or `scripts/target_redshifts.csv`) | no | replaces the redshift catalogue shipped with the app |
+
+Choosing a reduction folder or `kmos_voronoi_maps` by mistake is fine: the app then uses the folder
+above it.
 
 ## Line maps
 
 In the app: **Maps** tab → **Compute Voronoi fit** for the selected galaxy. For all galaxies of a
-reduction, use the pipeline from the command line (no Qt needed, also for a server):
+reduction, use the pipeline from the command line in the repository folder (no Qt needed, also for
+a server):
 
 ```bash
 python -m empower_explorer.pipeline.voronoi_binning --all
 ```
 
-Useful options: `--root <data folder>`, `--variant kmos_comb_hyb_tell`, `--galaxy "COSMOS 92754"`
-(repeatable), `--max-components 3`, `--target-sn 15`, `--overwrite`, `--workers 4`, `--out <folder>`.
+Useful options: `--root <data folder>` (default: the folder chosen in the app, then `EMPOWER_ROOT`,
+then automatic), `--variant kmos_comb_hyb_tell`, `--galaxy "COSMOS 92754"` (repeatable),
+`--max-components 3`, `--target-sn 15`, `--overwrite`, `--workers 4`, `--out <folder>`. Galaxies that
+already have a product of the same pipeline version are skipped unless `--overwrite` is given.
 
 The pipeline fits Hβ, [OIII] 4959/5007, Hα, [NII] 6548/6583 and [SII] 6716/6731 with up to three
 Gaussian components per line group, on Voronoi bins of the Hα S/N (else [OIII], else Hβ) that are

@@ -5,7 +5,8 @@ The EMPOWER data folder is found in this order:
   2. the environment variable EMPOWER_ROOT
   3. a folder EMPOWER_data or EMPOWER_Analysis_and_presentation next to the app (the repository or
      the .exe) or above it; for the .exe also the folder the .exe is in
-It must contain at least one reduction folder (kmos_comb_* / kmos_proc_and_comb_*) with combined cubes.
+It must contain at least one reduction folder (kmos_comb_* / kmos_proc_and_comb_*) with combined cubes
+and must not be a reduction or product folder itself.
 The analysis scripts and reference tables ship with the app (empower_explorer/scripts).
 """
 import os
@@ -74,12 +75,13 @@ def _is_reduction_name(name):
 
 
 def is_empower_root(path):
-    """True for a folder that contains a reduction folder (kmos_comb_* / kmos_proc_and_comb_*)."""
+    """True for a data folder: it holds a reduction folder (kmos_comb_* / kmos_proc_and_comb_*) with combined
+    cubes and is neither a reduction folder (some hold per-band reductions) nor the product folder itself."""
     p = Path(path) if path else None
-    if not (p and p.is_dir()):
+    if not (p and p.is_dir()) or _is_reduction_name(p.name) or p.name == 'kmos_voronoi_maps':
         return False
     try:
-        return any(c.is_dir() and _is_reduction_name(c.name) for c in p.iterdir())
+        return any(c.is_dir() and _is_reduction_name(c.name) and _has_cubes(c) for c in p.iterdir())
     except OSError:
         return False
 
