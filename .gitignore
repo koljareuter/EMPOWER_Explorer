@@ -1,0 +1,20 @@
+# build output: the .exe is published as a GitHub release asset, not committed
+build/
+dist/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# EMPOWER data stay in the data folder, never in the repository
+*.fits
+kmos_voronoi_maps/
+
+# system files
+Thumbs.db
+desktop.ini
+.DS_Store
