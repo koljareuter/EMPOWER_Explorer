@@ -3,7 +3,12 @@
 sky via the WCS and weighted by texp (x A(lambda)^2 for telluric-corrected cubes, kmos_sample.
 _stack_weights); STAT (1 sigma) propagated; transmission from the TELLEFF_ files (ATM extension).
 The pixel grid is the one the resolved map products were made on.
+
+Extensions are found by a part of their name (find_ext): the cube is the first 3-D extension whose EXTNAME
+contains DATA ('DATA', 'CUBE-DATA', 'IFU.3.DATA', ...), its 1-sigma error the one containing STAT (else NOISE
+or ERR), the transmission the one containing ATM.
 """
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -56,6 +61,46 @@ class BandStack:
         return f'{self.band} {tt}{n}'.strip()
 
 
+ERROR_KEYS = ('STAT', 'NOISE', 'ERR')
+
+
+def find_ext(hdul, key, ndim=None, avoid=()):
+    """First extension whose EXTNAME contains `key` (case-insensitive), with `ndim` data axes if given; an
+    exact match wins, then names without any of `avoid`; None if there is none."""
+    def name(e):
+        return str(e.header.get('EXTNAME', '')).strip().upper()
+    key = key.upper()
+    hits = [e for e in hdul[1:] if key in name(e) and (ndim is None or e.header.get('NAXIS') == ndim)]
+    exact = [e for e in hits if name(e) == key]
+    clean = [e for e in hits if not any(a in name(e) for a in avoid)]
+    return (exact or clean or hits or [None])[0]
+
+
+def data_ext(hdul):
+    """The cube extension: 3-D, EXTNAME containing DATA (not one of the error ones, e.g. DATA_ERR)."""
+    return find_ext(hdul, 'DATA', ndim=3, avoid=ERROR_KEYS)
+
+
+def error_ext(hdul, ndim=3):
+    """The 1-sigma extension of a cube: EXTNAME containing STAT, else NOISE, else ERR; None without one."""
+    for key in ERROR_KEYS:
+        e = find_ext(hdul, key, ndim)
+        if e is not None:
+            return e
+    return None
+
+
+def _telluric_atm(path):
+    """Atmosphere-only transmission from the TELLEFF_ file next to a cube (extension containing ATM), else None
+    (kmos_sample.telluric_atm_of, with the extension found by name part)."""
+    p = os.path.join(os.path.dirname(path), 'TELLEFF_' + os.path.basename(path)[len('DATACUBE_COMBINED_'):])
+    if not os.path.exists(p):
+        return None
+    with fits.open(p) as h:
+        e = find_ext(h, 'ATM')
+        return np.asarray(e.data, float) if e is not None and e.data is not None else None
+
+
 def load_band_stack(infos):
     """Stack the cubes `infos` (scan infos of ONE galaxy and band) -> BandStack."""
     ks = engine.ks
@@ -63,9 +108,13 @@ def load_band_stack(infos):
     cubes, stats, wcss, wave, bunit, header0 = [], [], [], None, '', {}
     for k, m in enumerate(infos):
         with fits.open(m['path'], memmap=True) as hf:
-            hdr = hf['DATA'].header
-            cube = np.array(hf['DATA'].data, dtype=np.float32)
-            stat = np.array(hf['STAT'].data, dtype=np.float32) if 'STAT' in hf else None
+            dext = data_ext(hf)
+            if dext is None:
+                raise ValueError(f'{os.path.basename(m["path"])}: no 3-D extension with DATA in its name')
+            sext = error_ext(hf)
+            hdr = dext.header
+            cube = np.array(dext.data, dtype=np.float32)
+            stat = np.array(sext.data, dtype=np.float32) if sext is not None else None
             if k == 0:
                 bunit = str(hdr.get('BUNIT', '')).strip()
                 header0 = {key: hf[0].header[key] for key in hf[0].header
@@ -84,7 +133,10 @@ def load_band_stack(infos):
     tells = [ks.telluric_of(m['path']) for m in infos]
     if not all(t is not None and t.shape == wave.shape for t in tells):
         tells = [None] * len(infos)
-    atms = [ks._member_atm(m['path'], t, wave) if t is not None else None for m, t in zip(infos, tells)]
+    atms = []                          # kmos_sample._member_atm: the ATM extension, else derived from T_eff
+    for m, t in zip(infos, tells):
+        a = _telluric_atm(m['path']) if t is not None else None
+        atms.append(a if a is not None else (ks.atmospheric_transmission(t, wave) if t is not None else None))
     weights = ks._stack_weights(texps, tells, atms, False)
     have_stat = all(s is not None and s.shape == c.shape for s, c in zip(stats, cubes))
     if have_stat:

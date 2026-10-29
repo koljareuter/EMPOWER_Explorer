@@ -2229,6 +2229,166 @@ def rest_from_lines(lines_df):
     return {by_tag.get(str(t).strip(), str(t).strip()): float(r) for t, r in zip(lines_df['LINE'], lines_df['REST_UM'])}
 
 
+# ======================================================================== Halpha and [NII] separately
+SEP_SNR_MIN = 5.0        # velocity and width of a line are reported from this S/N on (= Config.kin_snr_min:
+                         # a free search needs S/N 5 to be as safe as a forced S/N 3)
+SEP_KEYS = ('HA_FLUX', 'HA_FLUX_ERR', 'HA_SNR', 'HA_V50', 'HA_VERR', 'HA_SIG', 'HA_SIGERR', 'HA_W80',
+            'NII_FLUX', 'NII_FLUX_ERR', 'NII_SNR', 'NII_V50', 'NII_VERR', 'NII_SIG', 'NII_SIGERR', 'NII_W80',
+            'DV_NII_HA', 'DV_NII_HA_ERR', 'CHI2NU', 'NPIX')
+
+
+def fit_hanii_separate(wave, spec, err, z_ref, band, rest=None, resolving_power=None, mask=None,
+                       start=(0.0, 80.0), cfg=None):
+    """Halpha and the [NII] doublet of one spectrum with SEPARATE kinematics: linear continuum + one
+    Gaussian for Halpha (v, sigma) + one for [NII] 6548/6583 (own v, sigma; 6548 = 6583 / 2.94).  The joint
+    fit of the pipeline ties them; this shows whether [NII] moves differently (outflows, AGN, shocks).
+    Velocities [km/s] w.r.t. z_ref, sigma intrinsic (LSF removed), W80 = 2.563 sigma.  Only the four kinematic
+    parameters are non-linear (fluxes >= 0 and continuum from a weighted linear solve, several starts);
+    errors from the Jacobian of a final fit of all parameters, x sqrt(max(1, chi2nu)).  Returns
+    {SEP_KEYS: value}; velocity and width of a line below S/N SEP_SNR_MIN, or stuck at a fit limit
+    (sigma at 1 or 600 km/s, |v| at dv_max), are NaN."""
+    from scipy.optimize import least_squares, lsq_linear
+    cfg = cfg or Config()
+    rest = rest or REST
+    out = {k: np.nan for k in SEP_KEYS}
+    lsf = sigma_lsf_kms(band, resolving_power if (resolving_power and np.isfinite(resolving_power)) else None)
+    lo = (rest['NII6548'] - cfg.win_pad) * (1 + z_ref)
+    hi = (rest['NII6583'] + cfg.win_pad) * (1 + z_ref)
+    use = (wave > lo) & (wave < hi) & np.isfinite(spec) & np.isfinite(err) & (err > 0)
+    if mask is not None:
+        use &= mask
+    if use.sum() < 12:
+        return out
+    x, y, e = wave[use], spec[use], err[use]
+    x0 = float(np.median(x))
+
+    def prof(line, v, s):
+        mu = rest[line] * (1 + z_ref) * (1 + v / C_KMS)
+        return _unit_gauss(x, mu, mu * np.hypot(lsf, s) / C_KMS)
+
+    def design(th):
+        va, sa, vn, sn = th
+        return np.column_stack([np.ones_like(x), x - x0, prof('Ha', va, sa),
+                                prof('NII6583', vn, sn) + prof('NII6548', vn, sn) / 2.94])
+
+    lo_b = [-np.inf, -np.inf, 0.0, 0.0]
+
+    def linear(th):
+        sol = lsq_linear(design(th) / e[:, None], y / e, bounds=(lo_b, [np.inf] * 4))
+        return sol.x
+
+    def resid(th):
+        return (y - design(th) @ linear(th)) / e
+
+    vmax = cfg.dv_max
+    bounds = ([-vmax, 1.0, -vmax, 1.0], [vmax, 600.0, vmax, 600.0])
+    v0 = float(start[0]) if np.isfinite(start[0]) else 0.0
+    s0 = float(start[1]) if np.isfinite(start[1]) else 80.0
+    v0, s0 = float(np.clip(v0, -vmax + 1, vmax - 1)), float(np.clip(s0, 5.0, 500.0))
+    best = None
+    for dv_n in (0.0, -150.0, 150.0):
+        th0 = [v0, s0, float(np.clip(v0 + dv_n, -vmax + 1, vmax - 1)), s0]
+        try:
+            r = least_squares(resid, th0, bounds=bounds, x_scale=[50, 50, 50, 50])
+        except Exception:
+            continue
+        if best is None or r.cost < best.cost:
+            best = r
+    if best is None:
+        return out
+    lo_f = np.array([-np.inf, -np.inf, 0.0, 0.0] + bounds[0])
+    hi_f = np.array([np.inf, np.inf, np.inf, np.inf] + bounds[1])
+    p0 = np.r_[linear(best.x), best.x]          # a, b, f_Ha, f_NII, v_Ha, s_Ha, v_NII, s_NII
+    p0 = np.minimum(np.maximum(p0, lo_f + 1e-9 * np.isfinite(lo_f)), hi_f - 1e-9 * np.isfinite(hi_f))
+
+    def full(p):
+        return (y - design(p[4:]) @ p[:4]) / e
+
+    try:
+        fin = least_squares(full, p0, bounds=(lo_f, hi_f))
+        p, J = fin.x, fin.jac
+        chi2nu = float(np.sum(fin.fun ** 2) / max(len(x) - len(p), 1))
+        d = np.linalg.norm(J, axis=0)           # parameters of very different scale (fluxes ~1e-5, km/s ~100):
+        d[d == 0] = 1.0                          # invert the column-normalised matrix, else pinv drops directions
+        Js = J / d
+        cov = np.linalg.pinv(Js.T @ Js) / np.outer(d, d) * max(1.0, chi2nu)
+    except Exception:
+        return out
+    perr = np.sqrt(np.clip(np.diag(cov), 0, None))
+    out['CHI2NU'], out['NPIX'] = chi2nu, int(len(x))
+    for tag, fi, vi, si in (('HA', 2, 4, 5), ('NII', 3, 6, 7)):
+        f, fe = float(p[fi]), float(perr[fi])
+        out[f'{tag}_FLUX'], out[f'{tag}_FLUX_ERR'] = f, fe
+        out[f'{tag}_SNR'] = f / fe if fe > 0 else np.nan
+        at_limit = p[si] <= 1.5 or p[si] >= 590.0 or abs(p[vi]) >= vmax - 5.0
+        if np.isfinite(out[f'{tag}_SNR']) and out[f'{tag}_SNR'] >= SEP_SNR_MIN and not at_limit:
+            out[f'{tag}_V50'], out[f'{tag}_VERR'] = float(p[vi]), float(perr[vi])
+            out[f'{tag}_SIG'], out[f'{tag}_SIGERR'] = float(p[si]), float(perr[si])
+            out[f'{tag}_W80'] = 2.5631 * float(p[si])
+    if np.isfinite(out['HA_V50']) and np.isfinite(out['NII_V50']):
+        out['DV_NII_HA'] = out['NII_V50'] - out['HA_V50']
+        out['DV_NII_HA_ERR'] = float(np.sqrt(max(cov[6, 6] + cov[4, 4] - 2 * cov[4, 6], 0.0)))
+    return out
+
+
+def hanii_separate(product, stacks):
+    """fit_hanii_separate for every bin of a Voronoi product, on the bins' spectra exactly as the joint fit
+    saw them (product_bin_spectrum, its fit window minus the clipped pixels), started from the joint
+    kinematics.  stacks: {band: BandStack}.  Returns {bin id: result}; bins without an Halpha+[NII] fit
+    are left out."""
+    bins, hdr = product['bins'], product['header']
+    z = float(hdr.get('Z_REF', hdr.get('Z')))
+    rest, cfg = product.get('rest'), product.get('config')
+    out = {}
+    for _, row in bins.iterrows():
+        band = str(row.get('HANII_BAND') or '').strip()
+        if not band or band not in stacks:
+            continue
+        b = int(row['BIN'])
+        sp = product_bin_spectrum(product, stacks[band], band, b)
+        if sp is None:
+            continue
+        wave, spec, err = sp
+        v0 = row.get('HANII_V50', np.nan)
+        v0 = v0 if np.isfinite(v0) else row.get('HANII_C1_MV', 0.0)
+        s0 = row.get('HANII_C1_SIG', np.nan)
+        s0 = s0 if np.isfinite(s0) else row.get('HANII_C1_MSIG', 80.0)
+        out[b] = fit_hanii_separate(wave, spec, err, z, band, rest, product['noise'][band].get('resolving_power'),
+                                    mask=used_pixels(product, wave, b, 'ha', z), start=(v0, s0), cfg=cfg)
+    return out
+
+
+def velocity_field(product, band):
+    """Velocity [km/s w.r.t. Z_REF] of every spaxel on the grid of `band` from a Voronoi product: the anchor
+    group's v50 of its bin, else the bin's template (forced bins: interpolated from the detected ones) or
+    model velocity; spaxels outside the bins take the value of the nearest binned spaxel.  None without
+    bins in that band.  Used to shift spaxels to rest before rings are stacked."""
+    from scipy.ndimage import distance_transform_edt
+    maps, hdr, bins = product['maps'], product['header'], product['bins']
+    bm = maps.get('BINMAP') if band == str(hdr.get('ANCHBAND', '')).strip() else maps.get(f'BINMAP_{band}')
+    if bm is None or bins is None or bins.empty:
+        return None
+    bm = np.asarray(bm)
+    G = group_tag(str(hdr.get('ANCHOR') or 'ha').strip())
+    lut = np.full(max(int(bm.max()), 0) + 1, np.nan)
+    for _, r in bins.iterrows():
+        b = int(r['BIN'])
+        for col in (f'{G}_V50', f'{G}_TPL_V', f'{G}_C1_MV'):
+            v = r.get(col, np.nan)
+            if v is not None and np.isfinite(v):
+                if 0 <= b < lut.size:
+                    lut[b] = v
+                break
+    vmap = np.full(bm.shape, np.nan)
+    ok = bm >= 0
+    vmap[ok] = lut[bm[ok]]
+    known = np.isfinite(vmap)
+    if not known.any():
+        return None
+    idx = distance_transform_edt(~known, return_distances=False, return_indices=True)
+    return vmap[tuple(idx)]
+
+
 # ======================================================================== command line / batch
 PIPELINE_DIR = 'kmos_voronoi_maps'
 

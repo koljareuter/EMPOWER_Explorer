@@ -25,7 +25,7 @@ import os
 import sys
 import threading
 import traceback
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 
 import numpy as np
 import pyqtgraph as pg
@@ -613,14 +613,19 @@ def _sky_to_pixels(stack, sky, r_default):
     return x, y, float(r_default)
 
 
-def _compare_job(sources, sky, r_default, z, method, subtract_bg):
+# request of a reduction comparison; fields by name - a new field must not shift any other
+_CompareReq = namedtuple('_CompareReq', 'key band va vb sky r r_in method sub z')
+
+
+def _compare_job(sources, sky, r_default, z, method, subtract_bg, rin_frac=0.0):
     """Worker: stack + extract + fit one band of two reductions.
-    sources: [(reduction, key, band, BandStack or [scan infos])] -> [result dict]."""
+    sources: [(reduction, key, band, BandStack or [scan infos])] -> [result dict].
+    rin_frac: inner / outer radius of an annulus aperture (0: full circle)."""
     out = []
     for variant, key, band, src in sources:
         st = _compare_stack(variant, key, band, src) if isinstance(src, list) else src
         x, y, r = _sky_to_pixels(st, sky, r_default)
-        spec = analysis.extract_spectrum(st, x, y, r, method=method, subtract_bg=subtract_bg)
+        spec = analysis.extract_spectrum(st, x, y, r, method=method, subtract_bg=subtract_bg, r_in=rin_frac * r)
         fits_ = {}
         if z is not None and spec.n_pix > 0:
             fits_, _ = analysis.fit_lines(spec, z)
@@ -1093,7 +1098,8 @@ class _ComparePanel(QFrame):
         z = st.z
         method, sub = st.options['method'], st.options['subtract_bg']
         sky_key = None if sky is None else tuple(round(v, 7) for v in sky)
-        req = (st.key, band, va, vb, sky_key, round(st.ap_r, 3), method, sub, None if z is None else round(z, 6))
+        req = _CompareReq(st.key, band, va, vb, sky_key, round(st.ap_r, 6), round(st.ap_rin, 6), method, sub,
+                          None if z is None else round(z, 6))
         if req == self._req:
             if self._result is not None:
                 self._redraw()
@@ -1115,7 +1121,7 @@ class _ComparePanel(QFrame):
         self.busy.setToolTip(f'Extracting {band} from {n_load} reduction{"s" if n_load > 1 else ""} '
                              f'and fitting its lines')
         self.status.setText('Loading …')
-        run_async(_compare_job, sources, sky, st.ap_r, z, method, sub,
+        run_async(_compare_job, sources, sky, st.ap_r, z, method, sub, st.ap_rin / st.ap_r if st.ap_r > 0 else 0.0,
                   on_done=lambda res, t=token, r=req: self._done(t, r, res),
                   on_error=lambda msg, t=token: self._failed(t, msg))
 
@@ -1145,7 +1151,7 @@ class _ComparePanel(QFrame):
             return
         self._snr_results = {r['variant']: r for r in res}
         by_variant = {r['variant']: r for r in res}
-        self._result = [by_variant[req[2]], by_variant[req[3]]]
+        self._result = [by_variant[req.va], by_variant[req.vb]]
         self._result_req = req
         self.busy.hide()
         self.status.setText('')
@@ -1162,7 +1168,7 @@ class _ComparePanel(QFrame):
     @property
     def _z(self):
         """Redshift the drawn result was fitted with (not a newer override still being fitted)."""
-        return self._result_req[8] if self._result_req is not None else None
+        return self._result_req.z if self._result_req is not None else None
 
     # -- drawing
     def _fill_windows(self):
@@ -1307,7 +1313,7 @@ class _ComparePanel(QFrame):
             lines_.append(f'<b>{tag}</b> {labels.get(res["variant"], res["variant"])}: {res["describe"]}, '
                           f'{"telluric" if res["telluric"] else "no telluric"} · {pos}')
         where = 'same sky position as the current aperture' if self._sky() is not None else 'target centre'
-        method = self._result_req[6] if self._result_req is not None else st.options['method']
+        method = self._result_req.method if self._result_req is not None else st.options['method']
         how = 'summed over' if method == 'sum' else 'weighted mean over'
         lines_.append(f'Both spectra at the {where}, {how} the aperture.')
         self.side_note.setText('<br>'.join(lines_))
@@ -1338,14 +1344,17 @@ def _catalogue_redshift(cat, key):
     return plain.redshift(key)
 
 
-def _fit_job(stacks, apertures, z, method, subtract_bg):
-    """Worker: the same spectra and fit as AppState.spectra() / fits() of the current aperture."""
+def _fit_job(stacks, apertures, z, method, subtract_bg, centre=None):
+    """Worker: the same spectra and fit as AppState.spectra() / fits() of the current aperture
+    (centre = (ref_band, x, y) for an annulus: its lines are forced to the central aperture's kinematics)."""
     spectra = {}
     for b, st in stacks.items():
-        x, y, r = apertures[b]
-        sp = analysis.extract_spectrum(st, x, y, r, method=method, subtract_bg=subtract_bg)
+        x, y, r, r_in = apertures[b]
+        sp = analysis.extract_spectrum(st, x, y, r, method=method, subtract_bg=subtract_bg, r_in=r_in)
         if sp.n_pix > 0:
             spectra[b] = sp
+    if centre is not None:
+        return analysis.fit_annulus(spectra, stacks, z, *centre, method=method, subtract_bg=subtract_bg)
     return analysis.fit_galaxy(spectra, stacks, z)
 
 
@@ -1482,7 +1491,8 @@ class RedshiftPage(_Page):
             self.fit_card.set_content('…', 'Waiting for the cubes of this galaxy.', big_color=C.TEXT_DIM)
             return
         method, sub = st.options['method'], st.options['subtract_bg']
-        req = (st.key, st.ref_band, round(st.ap_x, 2), round(st.ap_y, 2), round(st.ap_r, 2), method, sub, round(z, 6))
+        req = (st.key, st.ref_band, round(st.ap_x, 2), round(st.ap_y, 2), round(st.ap_r, 6), round(st.ap_rin, 6),
+               method, sub, round(z, 6))
         if req == self._fit_req and self._fit is not None:
             self._show_fit(*self._fit)
             return
@@ -1491,9 +1501,10 @@ class RedshiftPage(_Page):
         self._token += 1
         token = self._token
         stacks = dict(st.stacks)
-        apertures = {b: st.aperture_in(b) for b in stacks}
+        apertures = {b: st.annulus_in(b) for b in stacks}
         self.fit_card.set_content('…', 'Fitting the lines of the current aperture …', big_color=C.TEXT_DIM)
         run_async(_fit_job, stacks, apertures, z, method, sub,
+                  (st.ref_band, st.ap_x, st.ap_y) if st.ap_rin > 0 else None,
                   on_done=lambda res, t=token, zz=z: self._fit_done(t, zz, res),
                   on_error=lambda msg, t=token: self._fit_failed(t, msg))
 
@@ -1513,8 +1524,9 @@ class RedshiftPage(_Page):
     def _show_fit(self, z, fits_, info):
         st = self.state
         self._warnings = [w for w in self._warnings if not w.startswith('The lines of the current aperture')]
-        x, y, r = st.ap_x, st.ap_y, st.ap_r
-        ap = f'({x:.1f}, {y:.1f}) r = {r:.1f} px on {st.ref_band}' if x is not None else DASH
+        x, y, r, r_in = st.ap_x, st.ap_y, st.ap_r, st.ap_rin
+        rad = f'{r_in:.1f} < r ≤ {r:.1f} px' if r_in > 0 else f'r = {r:.1f} px'
+        ap = f'({x:.1f}, {y:.1f}) {rad} on {st.ref_band}' if x is not None else DASH
         if info.anchor in (None, 'external'):
             rows = [('Anchor', 'none (no line ≥ 5σ)', 'measure_lines needs an anchor line with S/N ≥ 5', None),
                     ('Aperture', ap, None, None)]

@@ -8,6 +8,7 @@ a placeholder showing the error, so one broken view never takes the whole app do
 import importlib
 import os
 import sys
+import threading
 import traceback
 
 from PyQt5.QtCore import Qt, QThreadPool, QTimer
@@ -26,6 +27,8 @@ TABS = [   # (module, class, title, tooltip)
      'Image, aperture, line panels (Hβ, [OIII], Hα, [SII]) and the full spectrum of all bands'),
     ('empower_explorer.views.maps_tab', 'MapsTab', 'Maps',
      'Resolved maps: notebook products and per-spaxel fits; click a spaxel for its spectrum'),
+    ('empower_explorer.views.radial_tab', 'RadialTab', 'Radial profiles',
+     'Surface brightness, W80, σ, line ratios, EW, ... against radius: Voronoi bins and rings fitted from the cubes'),
     ('empower_explorer.views.population_tab', 'PopulationTab', 'Population',
      'Galaxy properties of the whole sample: main sequence, BPT, WHAN, ...'),
     ('empower_explorer.views.qa_tab', 'QATab', 'Data QA',
@@ -340,6 +343,7 @@ def main():
     app.setOrganizationName(ORG_NAME)
     app.setApplicationName(APP_NAME)
     app.setWindowIcon(branding.app_icon())
+    title_bars = branding.TitleBars(app)  # noqa: F841  Windows title bars in the toolbar's blue
     theme.setup_pyqtgraph()
     theme.apply_palette(app)
 
@@ -368,6 +372,10 @@ def main():
     if geo is not None:
         win.restoreGeometry(geo)
     win.show()
+    branding.set_window_relaunch(win)     # a button pinned from the running window restarts this copy
+    if sys.platform == 'win32':           # shortcuts left pointing to a moved copy: rewrite (background)
+        from empower_explorer import shortcut
+        threading.Thread(target=shortcut.refresh_stale, daemon=True).start()
     if splash is not None:
         splash.raise_()
     QTimer.singleShot(50, win.start)      # paint the window first, then import and scan

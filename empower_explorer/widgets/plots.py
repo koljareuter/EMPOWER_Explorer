@@ -1,11 +1,12 @@
 """Plot building blocks shared by all tabs (pyqtgraph, dark theme).
 
     plot = make_plot('Title', 'Wavelength [µm]', 'S/N')     # pg.PlotWidget, styled
+    plot = make_plot(..., viewBox=SpectrumViewBox())          # wheel: x; Shift+wheel or y axis: y
     add_vline(plot, x, 'Hα', color, dashed=True)              # line marker with label
     add_spans(plot, [(lo, hi), ...])                           # grey shading (telluric bands)
     panel = ImagePanel(title='White light')                    # image + colour bar + aperture circle
     panel.set_image(img, cmap='magma')
-    panel.set_aperture(x, y, r);  panel.apertureMoved.connect(...)   # drag or click on the image
+    panel.set_aperture(x, y, r, r_in);  panel.apertureMoved.connect(...)   # drag or click on the image
     panel.pixelClicked.connect(...)  /  panel.pixelHovered.connect(...)
     empty = EmptyState('No maps for this galaxy')
 
@@ -17,7 +18,7 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtCore import QPointF, QRectF, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFont
-from PyQt5.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QGraphicsEllipseItem, QLabel, QVBoxLayout, QWidget
 
 from empower_explorer.theme import C
 
@@ -48,8 +49,62 @@ def style_plot_item(pi, title='', xlabel='', ylabel=''):
     return pi
 
 
-def make_plot(title='', xlabel='', ylabel='', parent=None):
-    w = pg.PlotWidget(parent=parent, background=C.BG_MEDIUM)
+class SpectrumViewBox(pg.ViewBox):
+    """ViewBox of a spectrum: the wheel zooms the wavelength axis; Shift + wheel, or the wheel over the y
+    axis, zooms y (not Ctrl: a touchpad pinch arrives as Ctrl + wheel and stays on the wavelength); dragging
+    the y axis pans y.  While y_manual is False the owner scales y to the data; a hand-made y range (also
+    typed in the context menu) sets it - then a drag in the plot also pans y - until a double-click or the
+    menu's y 'Auto' hands y back (sigYAuto: the owner re-scales)."""
+    sigYAuto = pyqtSignal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.y_manual = False
+        self.setMouseEnabled(x=True, y=True)
+        try:                                  # the context menu's y controls (pyqtgraph ViewBoxMenu)
+            ctrl = self.menu.ctrl[1]
+            for w in (ctrl.minText, ctrl.maxText):
+                w.editingFinished.connect(self._set_manual)
+            ctrl.manualRadio.clicked.connect(self._set_manual)
+            ctrl.autoRadio.clicked.connect(self._set_auto)
+        except Exception:
+            pass
+
+    def _set_manual(self):
+        self.y_manual = True
+
+    def _set_auto(self):
+        self.y_manual = False
+        self.sigYAuto.emit()
+
+    def _y_enabled(self):
+        return bool(self.state['mouseEnabled'][1])
+
+    def wheelEvent(self, ev, axis=None):
+        if axis is None:
+            axis = 1 if ev.modifiers() & Qt.ShiftModifier else 0
+        if axis == 1 and self._y_enabled():
+            self.y_manual = True
+        super().wheelEvent(ev, axis=axis)
+
+    def mouseDragEvent(self, ev, axis=None):
+        if axis is None and not self.y_manual and self.state['mouseMode'] != pg.ViewBox.RectMode:
+            axis = 0                          # y follows the data: a drag in the plot pans the wavelength
+        if axis == 1 and self._y_enabled():
+            self.y_manual = True
+        super().mouseDragEvent(ev, axis=axis)
+
+    def mouseClickEvent(self, ev):
+        if ev.double() and ev.button() == Qt.LeftButton:
+            ev.accept()
+            self.y_manual = False
+            self.sigYAuto.emit()
+            return
+        super().mouseClickEvent(ev)
+
+
+def make_plot(title='', xlabel='', ylabel='', parent=None, viewBox=None):
+    w = pg.PlotWidget(parent=parent, background=C.BG_MEDIUM, viewBox=viewBox)
     style_plot_item(w.getPlotItem(), title, xlabel, ylabel)
     w.setMinimumSize(120, 90)
     return w
@@ -149,7 +204,8 @@ def robust_levels(img, lo=1.0, hi=99.5, symmetric=False):
 
 
 class ImagePanel(pg.GraphicsLayoutWidget):
-    """A 2-D map with colour bar, optional draggable aperture circle and crosshair marker.
+    """A 2-D map with colour bar, optional draggable aperture circle (with a dashed inner circle for an
+    annulus) and crosshair marker.
 
     Signals: apertureMoved(x, y) (drag or click while the aperture is shown),
              apertureResized(r), pixelClicked(x, y) (integer pixel), pixelHovered(x, y, value)."""
@@ -187,6 +243,12 @@ class ImagePanel(pg.GraphicsLayoutWidget):
         self.plot.addItem(self.roi)
         self.roi.sigRegionChanged.connect(self._roi_changed)
         self._roi_guard = False
+        self.roi_inner = QGraphicsEllipseItem()          # inner edge of an annulus (follows the circle)
+        self.roi_inner.setPen(_pen(C.ACCENT, 1.5, Qt.DashLine))
+        self.roi_inner.setZValue(19)
+        self.roi_inner.hide()
+        self.plot.addItem(self.roi_inner)
+        self._r_in_frac = 0.0
         self.marker = pg.ScatterPlotItem(size=14, symbol='+', pen=_pen('#FFFFFF', 2), brush=None)
         self.marker.setZValue(25)
         self.plot.addItem(self.marker)
@@ -228,18 +290,26 @@ class ImagePanel(pg.GraphicsLayoutWidget):
         return self._data
 
     # -- aperture
-    def set_aperture(self, x, y, r, visible=True):
+    def set_aperture(self, x, y, r, r_in=0.0, visible=True):
         self._roi_guard = True
         self.roi.setPos(QPointF(x - r, y - r))
         self.roi.setSize((2 * r, 2 * r))
         self.roi.setVisible(visible)
+        self._r_in_frac = r_in / r if r > 0 and r_in > 0 else 0.0
+        self._place_inner(x, y, r)
         self._roi_guard = False
 
+    def _place_inner(self, x, y, r):
+        ri = self._r_in_frac * r
+        self.roi_inner.setRect(QRectF(x - ri, y - ri, 2 * ri, 2 * ri))
+        self.roi_inner.setVisible(ri > 0 and self.roi.isVisible())
+
     def _roi_changed(self):
-        if self._roi_guard:
-            return
         pos, size = self.roi.pos(), self.roi.size()
         r = size[0] / 2.0
+        self._place_inner(pos.x() + r, pos.y() + r, r)     # the inner circle moves with a drag at once
+        if self._roi_guard:
+            return
         self.apertureMoved.emit(pos.x() + r, pos.y() + r)
         self.apertureResized.emit(r)
 

@@ -104,6 +104,7 @@ QCheckBox::indicator:checked {{ background-color: {C.ACCENT}; border: 2px solid 
 QSlider::groove:horizontal {{ height: 6px; background: {C.BG_LIGHT}; border-radius: 3px; }}
 QSlider::handle:horizontal {{ background: {C.ACCENT}; width: 16px; margin: -6px 0; border-radius: 8px; }}
 QTabWidget::pane {{ border: none; background: {C.BG_DARK}; }}
+QTabBar {{ font-weight: bold; font-size: 13px; }}      /* tab sizes from the font the tabs are drawn with */
 QTabBar::tab {{ background: transparent; color: {C.TEXT_DIM}; padding: 9px 18px; margin-right: 2px;
                border-bottom: 3px solid transparent; font-weight: bold; font-size: 13px; min-width: 80px; }}
 QTabBar::tab:selected {{ color: {C.TEXT}; border-bottom: 3px solid {C.ACCENT}; }}

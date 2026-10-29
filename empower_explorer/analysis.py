@@ -39,10 +39,55 @@ def _quiet():
 
 
 # ------------------------------------------------------------------ apertures and spectra
-def aperture_mask(shape, x, y, r):
-    """Circular aperture (radius r px) at (x, y) on a (ny, nx) grid."""
+def aperture_mask(shape, x, y, r, r_in=0.0):
+    """Circular aperture (radius r px) at (x, y) on a (ny, nx) grid; with r_in > 0 the annulus
+    r_in < d <= r, so neighbouring annuli (and the circle inside) never share a spaxel."""
     yy, xx = np.indices(shape)
-    return (xx - x) ** 2 + (yy - y) ** 2 <= r ** 2
+    d2 = (xx - x) ** 2 + (yy - y) ** 2
+    return (d2 <= r ** 2) & (d2 > r_in ** 2) if r_in > 0 else d2 <= r ** 2
+
+
+COSMO_H0, COSMO_OM0 = 70.0, 0.3      # flat LambdaCDM of the notebooks (kmos_snr_annuli_reff.ipynb)
+_KPC_PER_ARCSEC = {}
+
+
+def kpc_per_arcsec(z):
+    """Proper kpc per arcsec at redshift z (flat LambdaCDM, H0 = 70, Om0 = 0.3); NaN without z."""
+    if z is None or not np.isfinite(z) or z <= 0:
+        return np.nan
+    key = round(float(z), 6)
+    if key not in _KPC_PER_ARCSEC:
+        from astropy.cosmology import FlatLambdaCDM
+        cosmo = FlatLambdaCDM(H0=COSMO_H0, Om0=COSMO_OM0)
+        _KPC_PER_ARCSEC[key] = float(cosmo.kpc_proper_per_arcmin(key).value / 60.0)
+    return _KPC_PER_ARCSEC[key]
+
+
+def half_light_radius(image, x, y):
+    """Radius [px] around (x, y) that encloses half of the total flux of `image` inside the largest
+    circle that fits on the grid (curve of growth, as reff_from_image of kmos_snr_annuli_reff.ipynb);
+    NaN if the image has no positive total."""
+    if image is None or not np.isfinite(image).any():
+        return np.nan
+    ny, nx = image.shape
+    r_max = min(x, y, nx - 1 - x, ny - 1 - y)
+    if r_max < 1:
+        return np.nan
+    yy, xx = np.indices(image.shape)
+    dist = np.hypot(xx - x, yy - y)
+    im = np.where(np.isfinite(image), image, 0.0)
+    steps = np.linspace(0.0, float(r_max), int(r_max * 10) + 2)
+    cum = np.array([im[dist <= r].sum() for r in steps])
+    total = cum[-1]
+    if not np.isfinite(total) or total <= 0:
+        return np.nan
+    i = int(np.searchsorted(cum, 0.5 * total))
+    if i == 0:
+        return float(steps[0])
+    if i >= len(steps):
+        return float(steps[-1])
+    f0, f1, r0, r1 = cum[i - 1], cum[i], steps[i - 1], steps[i]
+    return float(r0) if f1 == f0 else float(r0 + (0.5 * total - f0) / (f1 - f0) * (r1 - r0))
 
 
 @dataclass
@@ -81,15 +126,29 @@ def residual_background(stack, x, y, r, r_min=6.0, min_spaxels=20):
     return np.where(np.isfinite(bg), bg, 0.0)
 
 
-def extract_spectrum(stack, x, y, r, method='sum', subtract_bg=False, min_coverage=0.5):
-    """Aperture spectrum of a BandStack.
+def _ring_noise(stack, mask, x, y, r, min_bg=8):
+    """Fit noise of an annulus from the spaxels outside its outer radius (>= r + 2 px, else >= r + 1 px), as
+    kmos_snr_distribution.ipynb: the default background (everything outside the dilated mask) would include
+    the galaxy inside the ring.  None if fewer than min_bg spaxels are left (measure_lines then estimates it)."""
+    yy, xx = np.indices(stack.cube.shape[1:])
+    d = np.hypot(xx - x, yy - y)
+    for gap in (2.0, 1.0):
+        bg = (d >= r + gap) & (stack.coverage > 0)
+        if bg.sum() >= min_bg:
+            return engine.lsnr.noise_from_cube(stack.cube, mask, bg_mask=bg)
+    return None
+
+
+def extract_spectrum(stack, x, y, r, method='sum', subtract_bg=False, min_coverage=0.5, r_in=0.0):
+    """Aperture spectrum of a BandStack (the annulus r_in < d <= r if r_in > 0).
 
     method 'sum'  : total flux in the aperture; spaxels missing at a wavelength are filled with the
                     mean of the valid ones (no dips at partially covered wavelengths); NaN where
                     fewer than half of the aperture spaxels are valid.
     method 'mean' : inverse-variance weighted mean per spaxel (STAT), as the old KMOS viewer.
-    The fit noise (`noise`) is line_snr.noise_from_cube of the same aperture, scaled like `flux`."""
-    mask = aperture_mask(stack.cube.shape[1:], x, y, r) & (stack.coverage > min_coverage)
+    The fit noise (`noise`) is line_snr.noise_from_cube of the same aperture, scaled like `flux` (for an
+    annulus with the spaxels outside it as background, _ring_noise)."""
+    mask = aperture_mask(stack.cube.shape[1:], x, y, r, r_in) & (stack.coverage > min_coverage)
     n = int(mask.sum())
     nz = stack.cube.shape[0]
     if n == 0:
@@ -118,7 +177,11 @@ def extract_spectrum(stack, x, y, r, method='sum', subtract_bg=False, min_covera
         flux = np.where(ok, flux, np.nan)
         if err is not None:
             err = np.where(ok, err, np.nan)
-        noise = engine.lsnr.noise_from_cube(stack.cube, mask) * scale
+        if r_in > 0:
+            noise = _ring_noise(stack, mask, x, y, r)
+            noise = noise * scale if noise is not None else None
+        else:
+            noise = engine.lsnr.noise_from_cube(stack.cube, mask) * scale
     finally:
         w.__exit__(None, None, None)
     bg_done = False
@@ -188,6 +251,7 @@ class FitInfo:
     sigma_int: float = np.nan
     anchor_band: str = ''
     anchor_stat: float = -np.inf      # min(fit S/N, aperture S/N) of the anchor search
+    forced_from: str = ''             # set when every line was forced to these kinematics (annulus: the centre)
 
 
 def sigma_lsf(band):
@@ -221,9 +285,10 @@ def covered_lines(stack_or_wave, z, keys=FIT_LINES, margin=0.004):
     return [k for k in keys if lo + margin <= REST[k] * (1 + z) <= hi - margin]
 
 
-def fit_lines(spec, z, keys=None, anchor=None):
+def fit_lines(spec, z, keys=None, anchor=None, search=True):
     """Calibrated line measurement of one spectrum (line_snr.measure_lines: one free anchor line,
-    all others forced to its velocity and width).  anchor=(dv, sigma_int) from another band.
+    all others forced to its velocity and width).  anchor=(dv, sigma_int) from another band;
+    search=False: no free anchor, every line forced to `anchor` (or to the catalogue z without one).
     Returns ({key: LineFit}, FitInfo)."""
     keys = keys if keys is not None else covered_lines(spec.wave[np.isfinite(spec.flux)], z) \
         if np.isfinite(spec.flux).any() else []
@@ -231,8 +296,9 @@ def fit_lines(spec, z, keys=None, anchor=None):
         return {}, FitInfo()
     w = _quiet()
     try:
+        extra = {} if search else {'t_anchor': np.inf}
         res, info = engine.lsnr.measure_lines(spec.wave, spec.flux, z, {k: REST[k] for k in keys},
-                                              noise=spec.noise, band=spec.band, anchor=anchor)
+                                              noise=spec.noise, band=spec.band, anchor=anchor, **extra)
     finally:
         w.__exit__(None, None, None)
     out = {k: _to_linefit(k, spec.band, r) for k, r in res.items()}
@@ -261,11 +327,13 @@ def pick_band(stacks, lam_obs):
     return max(cands, key=lambda b: (stacks[b].exptime_s if np.isfinite(stacks[b].exptime_s) else 0.0))
 
 
-def fit_galaxy(spectra, stacks, z):
+def fit_galaxy(spectra, stacks, z, forced=None):
     """All FIT_LINES of a galaxy, each measured in the deepest band that covers it.
     As kmos_catalogue_statistics.ipynb: every band is fitted on its own first; the galaxy's best
     anchor (highest anchor_stat over all bands) is then passed to every band that found no anchor of
     its own, which is re-fitted with those kinematics (measure_lines anchor=(dv, sigma_int)).
+    forced=FitInfo: no anchor search, every line forced to forced.dv / forced.sigma_int (to the
+    catalogue z if forced.anchor is None) - the lines of an annulus (fit_annulus).
     spectra: {band: Spectrum}; returns ({key: LineFit}, FitInfo of the best anchor)."""
     if z is None or not spectra:
         return {}, FitInfo()
@@ -274,6 +342,17 @@ def fit_galaxy(spectra, stacks, z):
         b = pick_band({b: s for b, s in stacks.items() if b in spectra}, REST[k] * (1 + z))
         if b is not None:
             use.setdefault(b, []).append(k)
+    if forced is not None:
+        kin = (forced.dv, forced.sigma_int) if forced.anchor is not None else None
+        src = ('catalogue z' if not kin else forced.forced_from if forced.anchor == 'external' else
+               f'{lines.LINE_LABELS.get(forced.anchor, forced.anchor)} ({forced.anchor_band}), {forced.forced_from}')
+        fits = {}
+        for b, keys in use.items():
+            res, _ = fit_lines(spectra[b], z, keys=keys, anchor=kin, search=False)
+            for lf in res.values():
+                lf.kinematics = src
+            fits.update(res)
+        return fits, forced
     first = {b: fit_lines(spectra[b], z, keys=keys) for b, keys in use.items()}
     own = [info for _, info in first.values() if info.anchor not in (None, 'external')]
     best = max(own, key=lambda i: i.anchor_stat) if own else FitInfo()
@@ -286,6 +365,39 @@ def fit_galaxy(spectra, stacks, z):
                 lf.kinematics = src
         fits.update(res)
     return fits, best
+
+
+CENTRAL_R = 2.5      # px: the integrated aperture whose kinematics the lines of an annulus are forced to
+
+
+def central_kinematics(stacks, ref_band, x, y, z, method='sum', subtract_bg=False, r=CENTRAL_R, prefer=None):
+    """FitInfo of the integrated aperture (radius r px of ref_band) at (x, y): its free anchor (dv,
+    sigma_int) with forced_from naming it; anchor None if no line is strong enough.  prefer='Ha': that
+    line's own kinematics when it was fitted freely (the bins' anchor), whatever line won elsewhere."""
+    ref = stacks[ref_band]
+    spectra = {}
+    for b, st in stacks.items():
+        bx, by, br = transfer(ref, st, x, y, r)
+        sp = extract_spectrum(st, bx, by, br, method=method, subtract_bg=subtract_bg)
+        if sp.n_pix > 0:
+            spectra[b] = sp
+    fits, info = fit_galaxy(spectra, stacks, z)
+    where = f'central r = {r:g} px aperture'
+    lf = fits.get(prefer) if prefer else None
+    if lf is not None and lf.kinematics == 'free':
+        return FitInfo(anchor=prefer, dv=lf.dv_kms, sigma_int=lf.sigma_int_kms, anchor_band=lf.band, forced_from=where)
+    if info.anchor in (None, 'external'):
+        return FitInfo(forced_from=where)
+    info.forced_from = where
+    return info
+
+
+def fit_annulus(spectra, stacks, z, ref_band, x, y, method='sum', subtract_bg=False):
+    """Lines of an annulus as kmos_snr_annuli_reff / kmos_snr_distribution: no own anchor search, every
+    line forced to the kinematics of the integrated central aperture (catalogue z if that has none)."""
+    if z is None or not spectra:
+        return {}, FitInfo()
+    return fit_galaxy(spectra, stacks, z, forced=central_kinematics(stacks, ref_band, x, y, z, method, subtract_bg))
 
 
 # ------------------------------------------------------------------ maps and centring
@@ -508,3 +620,232 @@ def spaxel_fit_maps(stack, z, key='Ha', binning=1, min_coverage=0.5, progress=No
 
 def rest_wave(wave, z):
     return wave / (1.0 + z) if z else wave
+
+
+# ------------------------------------------------------------------ radial profiles
+def registered_stack(stack, vmap):
+    """Copy of `stack` with every spaxel shifted to rest at its velocity vmap[y, x] [km/s] (NaN: not
+    shifted), so the rotation is taken out before spaxels are summed (velocity-registered rings, as the
+    annular stacks of kmos_best3_single_gauss.ipynb).  Masked pixels stay masked after the shift; the
+    stack passed in is not changed."""
+    import copy
+    wave = stack.wave
+    arrays = [np.array(stack.cube, dtype=np.float32, copy=True)]
+    if stack.stat is not None:
+        arrays.append(np.array(stack.stat, dtype=np.float32, copy=True))
+    ys, xs = np.nonzero(np.isfinite(vmap) & (vmap != 0))
+    for y, x in zip(ys, xs):
+        for arr in arrays:
+            arr[:, y, x] = _shift(wave, arr[:, y, x], vmap[y, x])
+    st = copy.copy(stack)
+    st.cube = arrays[0]
+    st.stat = arrays[1] if len(arrays) > 1 else None
+    return st
+
+
+def _shift(wave, col, v):
+    """col(wave) of a spaxel at velocity v [km/s], shifted to rest: the value at wave comes from
+    wave (1 + v/c); NaN where the source pixel is masked."""
+    col = np.asarray(col, np.float64)
+    ok = np.isfinite(col)
+    if ok.sum() < 10:
+        return col
+    src = wave * (1.0 + v / C_KMS)
+    val = np.interp(src, wave, np.where(ok, col, 0.0), left=np.nan, right=np.nan)
+    good = np.interp(src, wave, ok.astype(float), left=0.0, right=0.0)
+    return np.where(good > 0.999, val, np.nan)
+
+
+def _outer_bg(stack, x, y, r, min_bg=8):
+    """Background spaxels for the noise of a ring: on the data and >= r + 2 px (else r + 1 px) from (x, y)."""
+    yy, xx = np.indices(stack.cube.shape[1:])
+    d = np.hypot(xx - x, yy - y)
+    for gap in (2.0, 1.0):
+        bg = (d >= r + gap) & (stack.coverage > 0)
+        if bg.sum() >= min_bg:
+            return bg
+    return None
+
+
+def _registered_noise(raw, mask, vmap, x, y, r, min_bg=8):
+    """Noise of a velocity-registered ring sum: the per-wavelength scatter of the background spaxels of the
+    UNshifted cube (where the sky lines of all spaxels line up), shifted with every ring spaxel by its own
+    velocity - like the data - and added in quadrature.  None without background spaxels."""
+    bg = _outer_bg(raw, x, y, r, min_bg)
+    if bg is None:
+        return None
+    w = _quiet()
+    try:
+        b = raw.cube[:, bg].astype(np.float64)
+        med = np.nanmedian(b, axis=1, keepdims=True)
+        sd = engine.lsnr.MAD2STD * np.nanmedian(np.abs(b - med), axis=1)
+        sd[np.isfinite(b).sum(1) < min_bg] = np.nan
+    finally:
+        w.__exit__(None, None, None)
+    var = np.zeros_like(sd)
+    nfin = np.zeros_like(sd)
+    for yy, xx in zip(*np.nonzero(mask)):
+        v = vmap[yy, xx] if vmap is not None and np.isfinite(vmap[yy, xx]) else 0.0
+        s = _shift(raw.wave, sd, v) if v else sd
+        ok = np.isfinite(s) & np.isfinite(raw.cube[:, yy, xx])
+        var[ok] += s[ok] ** 2
+        nfin += ok
+    return np.where(nfin > 0, np.sqrt(var), np.nan)
+
+
+def _fluxk(stack):
+    """(FLUXK [1e-17 erg/s/cm2/A per cube unit], relative error) of a stack's first cube; NaN if absent."""
+    h = getattr(stack, 'header0', None) or {}
+    try:
+        fk = float(h.get('FLUXK'))
+    except (TypeError, ValueError):
+        return np.nan, np.nan
+    try:
+        fe = float(h.get('FLUXKERR'))
+    except (TypeError, ValueError):
+        fe = 0.1
+    return fk, fe
+
+
+def _log_ratio(fits, num, den, stacks=None, snr_min=3.0):
+    """(log10 of the summed fluxes num / den, error); NaN unless every line has S/N >= snr_min.  Lines from
+    different bands are put on one scale with each band's FLUXK first (+ its calibration error), as the
+    pipeline's LOG_*_XBAND ratios; without FLUXK such a ratio is NaN."""
+    num = (num,) if isinstance(num, str) else num
+    den = (den,) if isinstance(den, str) else den
+    fa = [fits.get(k) for k in num]
+    fb = [fits.get(k) for k in den]
+    if any(f is None or not (f.snr >= snr_min) for f in fa + fb):
+        return np.nan, np.nan
+    bands = {f.band for f in fa + fb}
+    scale, cal = {b: 1.0 for b in bands}, 0.0
+    if len(bands) > 1:
+        ks = {b: _fluxk(stacks[b]) if stacks is not None and b in stacks else (np.nan, np.nan) for b in bands}
+        if not all(np.isfinite(k[0]) for k in ks.values()):
+            return np.nan, np.nan
+        scale = {b: k[0] for b, k in ks.items()}
+        cal = 0.4343 * float(np.sqrt(sum(k[1] ** 2 for k in ks.values())))
+    a = sum(f.flux * scale[f.band] for f in fa)
+    b = sum(f.flux * scale[f.band] for f in fb)
+    ea = np.sqrt(sum((f.flux_err * scale[f.band]) ** 2 for f in fa))
+    eb = np.sqrt(sum((f.flux_err * scale[f.band]) ** 2 for f in fb))
+    if not (a > 0 and b > 0):
+        return np.nan, np.nan
+    return float(np.log10(a / b)), float(np.hypot(0.4343 * np.hypot(ea / a, eb / b), cal))
+
+
+def _ew(lf, z):
+    """(rest-frame EW [Angstrom], error) of a line fit; NaN unless line S/N >= 3 and continuum S/N >= 3
+    (the continuum error from the scatter of the window pixels away from the line, as the pipeline's EW_HA cut)."""
+    if lf is None or lf.cont is None or lf.wave is None or lf.resid is None or not (lf.snr >= 3):
+        return np.nan, np.nan
+    c = float(np.interp(lf.center, lf.wave, lf.cont))
+    s_obs = lf.center * lf.sigma_obs_kms / C_KMS if np.isfinite(lf.sigma_obs_kms) else 0.0005
+    side = np.abs(lf.wave - lf.center) > 3 * s_obs
+    r = lf.resid[side]
+    r = r[np.isfinite(r)]
+    if c <= 0 or r.size < 5:
+        return np.nan, np.nan
+    c_err = 1.4826 * np.median(np.abs(r - np.median(r))) / np.sqrt(r.size)
+    if not (c_err > 0 and c / c_err >= 3):
+        return np.nan, np.nan
+    ew = lf.flux / c * 1e4 / (1 + z)
+    return float(ew), float(abs(ew) * np.hypot(lf.flux_err / lf.flux, c_err / c))
+
+
+def _common_background(stack, x, y, radii):
+    """The residual-sky pedestal used for every ring of a profile in one band: measured outside the largest
+    ring radius for which enough spaxels are left (residual_background), so all rings get the same
+    correction (None if no radius works: then no ring of that band is corrected)."""
+    for r in sorted(radii, reverse=True):
+        bg = residual_background(stack, x, y, r)
+        if bg is not None:
+            return bg, r
+    return None, np.nan
+
+
+def ring_profile(stacks, ref_band, x, y, edges, z, method='sum', subtract_bg=False, vmaps=None, sep_fit=None,
+                 anchor_line='Ha', fallback=None, progress=None):
+    """Spectra and line fits of the rings edges[i] < d <= edges[i+1] (px of ref_band, edges[0] = 0: a circle)
+    around (x, y), every band at the same sky position, fitted at redshift z (with vmaps: the frame the
+    spaxels were shifted to).  A ring's kinematics are those of `anchor_line` (the bins' anchor line) when
+    that line was fitted freely in the ring; otherwise every line of the ring is forced to the central
+    aperture's kinematics (fluxes only).  vmaps {band: km/s map}: velocity-registered rings (registered_stack,
+    noise shifted the same way).  subtract_bg: one residual-sky pedestal per band for all rings.
+    sep_fit(wave, spec, err, band, start): optional separate Halpha / [NII] fit of each ring.
+    fallback=(dv, sigma_int, name): kinematics to force the rings to when the centre has no anchor of its own
+    (the Voronoi fit's reference Z_REF / SIG_REF), instead of the catalogue z with a default width.
+    Returns ([ring dict], FitInfo of the central aperture, {band: radius [px] of the background region})."""
+    use = {b: registered_stack(st, vmaps[b]) if vmaps is not None and vmaps.get(b) is not None else st
+           for b, st in stacks.items()}
+    ref = use[ref_band]
+    centre = central_kinematics(use, ref_band, x, y, z, method, subtract_bg, prefer=anchor_line)
+    if centre.anchor is None and fallback is not None and all(np.isfinite(fallback[:2])):
+        centre = FitInfo(anchor='external', dv=float(fallback[0]), sigma_int=float(fallback[1]),
+                         forced_from=fallback[2])
+    pix = ref.pixscale
+    pairs = list(zip(edges[:-1], edges[1:]))
+    geo = {b: transfer(ref, st, x, y, 1.0) for b, st in use.items()}       # (x, y, px of b per px of ref)
+    bgs, bg_r = {}, {}
+    if subtract_bg:
+        for b, st in use.items():
+            bx, by, k = geo[b]
+            bgs[b], bg_r[b] = _common_background(st, bx, by, [r_out * k for _, r_out in pairs])
+    out = []
+    for i, (r_in, r_out) in enumerate(pairs):
+        if progress is not None:
+            progress(i, len(pairs))
+        spectra = {}
+        for b, st in use.items():
+            bx, by, k = geo[b]
+            br, bri = r_out * k, r_in * k
+            sp = extract_spectrum(st, bx, by, br, method=method, subtract_bg=False, r_in=bri)
+            if sp.n_pix == 0:
+                continue
+            if st is not stacks[b]:          # registered: noise shifted with the spaxels, like the data
+                mask = aperture_mask(st.cube.shape[1:], bx, by, br, bri) & (st.coverage > 0.5)
+                nz = _registered_noise(stacks[b], mask, vmaps.get(b), bx, by, br)
+                sp.noise = None if nz is None else nz * (1.0 if method == 'sum' else 1.0 / sp.n_pix)
+            if bgs.get(b) is not None:
+                sp.flux = sp.flux - bgs[b] * (sp.n_pix if method == 'sum' else 1)
+                sp.bg_subtracted = True
+            spectra[b] = sp
+        n = spectra[ref_band].n_pix if ref_band in spectra else 0
+        ideal = np.pi * (r_out ** 2 - r_in ** 2)
+        rec = dict(r_in=float(r_in), r_out=float(r_out), npix=int(n), area=n * pix ** 2,
+                   coverage=n / ideal if ideal > 0 else np.nan, kin='', anchor='', dv=np.nan, sigma=np.nan,
+                   w80=np.nan, bg_subtracted=all(s.bg_subtracted for s in spectra.values()) if spectra else False,
+                   method=method, npix_b={b: sp.n_pix for b, sp in spectra.items()},
+                   pix_b={b: use[b].pixscale for b in spectra})      # a line's area is that of its own band
+        if spectra and z is not None:
+            fits, info = fit_galaxy(spectra, use, z)
+            lf = fits.get(anchor_line)
+            own = lf is not None and lf.kinematics == 'free'
+            if not own:
+                fits, info = fit_galaxy(spectra, use, z, forced=centre)
+            rec['kin'] = ('free' if own else 'reference' if centre.anchor == 'external' else
+                          'centre' if centre.anchor else 'catalogue z')
+            if own:
+                rec.update(anchor=anchor_line, dv=lf.dv_kms, sigma=lf.sigma_int_kms, w80=lf.w80_kms)
+            for k in FIT_LINES:
+                f = fits.get(k)
+                rec[f'{k}_flux'] = f.flux if f is not None else np.nan
+                rec[f'{k}_err'] = f.flux_err if f is not None else np.nan
+                rec[f'{k}_snr'] = f.snr if f is not None else np.nan
+                rec[f'{k}_det'] = bool(f.detected) if f is not None else False
+                rec[f'{k}_band'] = f.band if f is not None else ''
+            rec['n2'], rec['n2_err'] = _log_ratio(fits, 'NII6583', 'Ha', use)
+            rec['s2'], rec['s2_err'] = _log_ratio(fits, ('SII6716', 'SII6731'), 'Ha', use)
+            rec['o3'], rec['o3_err'] = _log_ratio(fits, 'OIII5007', 'Hb', use)
+            rec['ew'], rec['ew_err'] = _ew(fits.get('Ha'), z)
+            if sep_fit is not None:
+                band = pick_band({b: s for b, s in stacks.items() if b in spectra}, REST['Ha'] * (1 + z))
+                if band is not None:
+                    sp = spectra[band]
+                    e = sp.noise if sp.noise is not None else sp.err
+                    start = ((rec['dv'], rec['sigma']) if own else
+                             (centre.dv, centre.sigma_int) if centre.anchor else (0.0, 80.0))
+                    start = tuple(v if np.isfinite(v) else d for v, d in zip(start, (0.0, 80.0)))
+                    rec['sep'] = sep_fit(sp.wave, sp.flux, e, band, start) if e is not None else None
+        out.append(rec)
+    return out, centre, bg_r

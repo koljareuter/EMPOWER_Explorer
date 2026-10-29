@@ -111,6 +111,44 @@ def _ltag(line):
     """Column prefix of a line in the products ('Ha' -> 'HA')."""
     return line.upper()
 _RATIOS = ['LOG_N2', 'LOG_O3', 'LOG_S2', 'LOG_O3N2', 'OH_N2_M13', 'SII_RATIO', 'NE_SII', 'EW_HA']
+# maps of the separate Halpha / [NII] fit (vb.hanii_separate): map name -> (result key, label, tooltip)
+_SEP_MAPS = {
+    'HA_SEP_V50': ('HA_V50', 'Hα v50, separate fit [km/s]', 'Hα velocity from a fit with its own kinematics'),
+    'HA_SEP_W80': ('HA_W80', 'Hα W80, separate fit [km/s]', 'Hα W80 = 2.563 σ_int (one Gaussian, own kinematics)'),
+    'HA_SEP_SNR': ('HA_SNR', 'Hα S/N, separate fit', 'Hα S/N of the fit with separate kinematics'),
+    'NII_SEP_V50': ('NII_V50', '[NII] v50, separate fit [km/s]',
+                    '[NII]6548+6583 velocity from a fit with its own kinematics (6548 = 6583 / 2.94)'),
+    'NII_SEP_W80': ('NII_W80', '[NII] W80, separate fit [km/s]', '[NII] W80 = 2.563 σ_int (own kinematics)'),
+    'NII_SEP_SNR': ('NII_SNR', '[NII]6583 S/N, separate fit', '[NII]6583 S/N of the fit with separate kinematics'),
+    'DV_NII_HA': ('DV_NII_HA', 'Δv [NII] − Hα, separate fit [km/s]',
+                  'Velocity of [NII] minus that of Hα (both from the separate fit); ≠ 0: [NII] moves differently '
+                  '(outflow, AGN, shocks)'),
+}
+_SEP_SNR = {'HA_SEP_V50': 'HA_SEP_SNR', 'HA_SEP_W80': 'HA_SEP_SNR', 'HA_SEP_SNR': 'HA_SEP_SNR',
+            'NII_SEP_V50': 'NII_SEP_SNR', 'NII_SEP_W80': 'NII_SEP_SNR', 'NII_SEP_SNR': 'NII_SEP_SNR',
+            'DV_NII_HA': 'NII_SEP_SNR'}
+
+
+def _paint_bins(binmap, values):
+    """2-D map: every spaxel of a bin gets values[bin] (NaN outside the bins or without a value)."""
+    bm = np.asarray(binmap)
+    lut = np.full(max(int(bm.max()), 0) + 1, np.nan)
+    for b, v in values.items():
+        if 0 <= int(b) < lut.size:
+            lut[int(b)] = v
+    img = np.full(bm.shape, np.nan)
+    ok = bm >= 0
+    img[ok] = lut[bm[ok]]
+    return img
+
+
+def _separate_job(path, stacks, date):
+    """Worker: Halpha and [NII] with separate kinematics in every bin of a Voronoi product - of the file version
+    the maps were read from (DATE), else an error (the file was rewritten meanwhile)."""
+    P = vb.read_product(path)
+    if str(P['header'].get('DATE', '')) != date:
+        raise RuntimeError(f'{os.path.basename(path)} was rewritten after it was read: select the galaxy again')
+    return vb.hanii_separate(P, stacks)
 _RATIO_GROUP = {'LOG_N2': 'ha', 'OH_N2_M13': 'ha', 'EW_HA': 'ha', 'LOG_O3': 'oiii', 'LOG_O3N2': 'oiii',
                 'LOG_S2': 'sii', 'SII_RATIO': 'sii', 'NE_SII': 'sii'}
 
@@ -250,6 +288,8 @@ def _group_of_map(name):
     n = (name or '').upper()
     if n in _RATIO_GROUP:
         return _RATIO_GROUP[n]
+    if n in _SEP_MAPS:                  # Halpha / [NII] fitted separately
+        return 'ha'
     for tok, g in _GROUP_TOKENS:
         if n == tok or n.startswith(tok + '_'):
             return g
@@ -272,6 +312,7 @@ def _pipe_order(names, anchor):
             return (len(groups) + 2, pos[n], 0)
         G, M = _gtag(g), _ltag(GROUPS[g]['main'])
         first = ([f'{M}_FLUX', f'{M}_SNR', f'{G}_V50', f'{G}_W80']
+                 + (list(_SEP_MAPS) if g == 'ha' else [])
                  + [f'{G}_C{k}_{q}' for k in (1, 2, 3) for q in ('V', 'SIG')]
                  + [f'{G}_NCOMP', f'{G}_CHI2NU', f'{M}_FLUX_ERR'] + [f'{M}_C{k}_FLUX' for k in (1, 2, 3)])
         return (groups.index(g), first.index(n) if n in first else len(first), pos[n])
@@ -461,6 +502,7 @@ class _MapSet:
     binmaps: dict = field(default_factory=dict)  # 'BINMAP'/'KINBINMAP' -> int array (products)
     bin_of: dict = field(default_factory=dict)   # map name -> binmap name its values belong to
     pipe: dict | None = None        # Voronoi fit: anchor, aband, rows, groups, z_ref, cfg, band_binmaps, ...
+    empty_msgs: dict = field(default_factory=dict)   # map name -> why it has no value at all
 
     @property
     def shape(self):
@@ -489,6 +531,8 @@ class _MapSet:
         if self.kind == 'cube':
             return None
         if self.pipe is not None:       # '<LINE>_SNR' of the map's line, else of the anchor line
+            if name in _SEP_SNR:        # separate Halpha / [NII] fit: its own S/N
+                return _SEP_SNR[name] if _SEP_SNR[name] in self.maps else None
             line = _line_of_map(name)
             cand = f'{line.upper()}_SNR' if line else None
             if cand in self.maps:
@@ -666,6 +710,7 @@ class MapsTab(QWidget):
         run_async(colormap, theme.CMAP_VELOCITY)
 
         state.galaxyChanged.connect(self._on_galaxy)
+        state.sepFitsChanged.connect(self._on_sep_fits)
         state.loadFailed.connect(lambda k: self._show_empty(
             f'The cubes of {k} could not be loaded',
             'See the error message; select the galaxy again in the list to retry.'))
@@ -777,6 +822,8 @@ class MapsTab(QWidget):
         self.vprogress.setFixedHeight(8)
         self.vprogress.setTextVisible(False)
         self.vprogress.hide()
+        self.sep_btn = QPushButton('Hα / [NII] separately')
+        self.sep_btn.clicked.connect(self._compute_separate)
 
         self.band_label = _dim('Band')
         self.line_label = _dim('Line')
@@ -785,7 +832,7 @@ class MapsTab(QWidget):
         for w in (_dim('Source'), self.source_combo, self.band_label, self.band_combo, self.line_label,
                   self.line_combo, self.bin_label, self.bin_combo, self.compute_btn, self.progress,
                   self.auto_chk, self.vcomp_label, self.vcomp_spin, self.vsn_label, self.vsn_spin,
-                  self.vfit_btn, self.vprogress):
+                  self.vfit_btn, self.vprogress, self.sep_btn):
             row.addWidget(w)
         row.addStretch(1)
         row.addWidget(self.snr_label)
@@ -1140,7 +1187,7 @@ class MapsTab(QWidget):
         for w in (self.line_label, self.line_combo, self.bin_label, self.bin_combo, self.compute_btn,
                   self.auto_chk):
             w.setVisible(live)
-        for w in (self.vcomp_label, self.vcomp_spin, self.vsn_label, self.vsn_spin, self.vfit_btn):
+        for w in (self.vcomp_label, self.vcomp_spin, self.vsn_label, self.vsn_spin, self.vfit_btn, self.sep_btn):
             w.setVisible(pipe)
         self.progress.setVisible(live and self._current_live_key() in self._jobs)
         bc = self.band_combo
@@ -1294,15 +1341,58 @@ class MapsTab(QWidget):
                 a = np.where(a < 0, np.nan, a.astype(float))      # -1 = spaxel in no bin
             maps[n] = np.asarray(a, dtype=float)
         unit = _flux_base_unit(prod)
+        rows_all = data.get('rows') or {}
+        bm = binmaps.get('BINMAP')
+        alab = GROUPS[anchor]['label']
+        extra_tips, empty = {}, {}
+        for g in GROUP_KEYS:          # every fitted group lists its v50 and W80; forced bins stay blank
+            G, lab = _gtag(g), GROUPS[g]['label']
+            states = [_num(r.get(f'{G}_FORCED')) for r in rows_all.values()]
+            fitted = [x for x in states if x in (0, 1)]
+            if not fitted or bm is None:
+                continue
+            n_forced = sum(1 for x in fitted if x == 1)
+            undetected = str(meta.get('STATUS') or '').strip() == 'no_detection'
+            for q in ('V50', 'W80'):
+                name = f'{G}_{q}'
+                if name not in maps:
+                    maps[name] = _paint_bins(bm, {b: _num(r.get(name)) for b, r in rows_all.items()})
+                if g == anchor:            # FORCED for the anchor: the anchor line itself was not detected there
+                    if n_forced:
+                        extra_tips[name] = (f'\n{lab} (the anchor) not detected in {n_forced} of {len(fitted)} bins '
+                                            '(velocity forced to the template of the detected bins / the centre) - '
+                                            'blank there')
+                    if n_forced == len(fitted):
+                        empty[name] = ('anchor line not detected in this galaxy:\nno velocity' if undetected else
+                                       f'{lab} (the anchor) not detected in any bin:\nno {q.lower()} of its own')
+                    continue
+                if n_forced:
+                    extra_tips[name] = (f'\n{n_forced} of {len(fitted)} bins: {lab} forced to the {alab} kinematics '
+                                        '(no velocity of its own) - blank there')
+                if n_forced == len(fitted):
+                    empty[name] = (f'all {len(fitted)} bins forced to the {alab} kinematics:\n'
+                                   f'{lab} has no {q.lower()} of its own here')
+        sep = self.state.sep_fits.get(self._prod_token(prod))
+        if sep and bm is not None:    # Halpha and [NII] with separate kinematics (computed on request)
+            for name, (key, _lab, _tip) in _SEP_MAPS.items():
+                maps[name] = _paint_bins(bm, {b: v.get(key, np.nan) for b, v in sep.items()})
+                if not np.isfinite(maps[name]).any():
+                    empty[name] = f'no bin reaches S/N {vb.SEP_SNR_MIN:g} in this line'
         tips = {n: f'{n}  ({base})' + ('' if n == 'SN_LINE' else
                                        '\none value per Voronoi bin: a click shows the spectrum of the bin '
                                        'and its fitted model') for n in maps}
         tips['SN_LINE'] = (f'SN_LINE  ({base})\nS/N of the anchor line per spaxel - the input of the '
                            'binning (a click shows the bin containing the spaxel)')
+        for n, t in extra_tips.items():
+            tips[n] += t
+        for n, (_key, _lab, tip) in _SEP_MAPS.items():
+            if n in maps:
+                tips[n] = (f'{n}\n{tip}\n(one Gaussian per line, own velocity and width; velocity and width '
+                           f'shown from S/N {vb.SEP_SNR_MIN:g} on)')
         names = list(maps)
         ms = _MapSet(kind=f'product:{prod.kind}', title=prod.kind, band=aband, order=_pipe_order(names, anchor),
-                     labels={n: pretty_map_name(n, unit) for n in maps}, maps=maps, binmaps=binmaps,
-                     tips={n: tips[n] for n in maps})
+                     labels={n: _SEP_MAPS[n][1] if n in _SEP_MAPS else pretty_map_name(n, unit) for n in maps},
+                     maps=maps, binmaps=binmaps, tips={n: tips[n] for n in maps}, empty_msgs=empty)
         ms.defaults = _pipe_defaults(names, anchor)
         ms.bin_of = {n: 'BINMAP' for n in maps if n != 'SN_LINE'} if binmaps else {}
         rows = data.get('rows') or {}
@@ -1405,7 +1495,59 @@ class MapsTab(QWidget):
         cat = self.state.catalog          # its own folder: state.root may already be a newly chosen one
         return os.path.join(pipeline_dir(cat.root, cat.variant), vb.product_name(self.state.key))
 
+    def _sep_possible(self):
+        """(ok, reason, product) - can Halpha and [NII] be fitted separately for the shown Voronoi fit?"""
+        prod = self._current_product()
+        if vb is None or prod is None or not prod.is_pipeline:
+            return False, 'needs a Voronoi fit as the map source', None
+        data = self._prod_data.get(self._prod_token(prod))
+        if not data:
+            return False, 'the Voronoi fit is still being read', prod
+        if 'error' in data:
+            return False, f'the Voronoi fit could not be read ({data["error"]})', prod
+        if data.get('cfg') is None:
+            return False, 'made by an older pipeline: compute the Voronoi fit again first', prod
+        rows = data.get('rows') or {}
+        bands = {str(r.get('HANII_BAND') or '').strip() for r in rows.values()} - {''}
+        if not bands:
+            return False, 'Hα+[NII] was not fitted in this Voronoi fit', prod
+        if not bands <= set(self.state.stacks):
+            return False, f'band {"/".join(sorted(bands))} of Hα+[NII] is not loaded', prod
+        return True, '', prod
+
+    def _update_sep_button(self):
+        ok, why, prod = self._sep_possible()
+        token = self._prod_token(prod) if prod is not None else None
+        running, done = token in self.state.sep_running, token in self.state.sep_fits
+        b = self.sep_btn
+        b.setText('Fitting Hα / [NII] …' if running else ('Hα / [NII] separately ✓' if done else 'Hα / [NII] separately'))
+        b.setEnabled(ok and not running and not done)
+        b.setToolTip('Fit Hα and the [NII] doublet of every bin with separate velocity and width (the Voronoi fit '
+                     'ties them).\nAdds maps of Hα and [NII] v50, W80, S/N and Δv([NII] − Hα); a few seconds.'
+                     if ok and not done else ('Done: see the maps “… separate fit” in the map choosers'
+                                              if done else f'Not possible: {why}'))
+
+    def _compute_separate(self):
+        ok, why, prod = self._sep_possible()
+        if not ok:
+            self.state.status.emit(f'Hα / [NII] separately: {why}', 6000)
+            return
+        token = self._prod_token(prod)
+        self.state.start_separate_fit(token, self.state.key, _separate_job, prod.path, dict(self.state.stacks),
+                                      token[1])
+
+    def _on_sep_fits(self, token):
+        """A separate fit started or finished (here or in the Radial profiles tab)."""
+        cur = self._current_product()
+        if cur is not None and self._prod_token(cur) == token and token in self.state.sep_fits:
+            if self.isVisible():
+                self._apply_source(controls=False)
+            else:
+                self._dirty = True
+        self._update_sep_button()
+
     def _update_vfit_controls(self):
+        self._update_sep_button()
         ok, why = self._vfit_possible()
         job = self._vjobs.get(self._vjob_key())
         pipe = self._is_pipe_sid(self.source_combo.currentData())
@@ -1462,6 +1604,7 @@ class MapsTab(QWidget):
                 lst[:] = [mp] + [p for p in lst if os.path.normcase(os.path.abspath(p.path)) != same]
                 if 'has_maps' in cat.galaxies.columns and jk[1] in cat.galaxies.index:
                     cat.galaxies.loc[jk[1], 'has_maps'] = True
+                self.state.productsChanged.emit(jk[1])
             self.state.status.emit(f'Voronoi fit of {jk[1]}: {rec["nbins"]} bin(s) ({rec["status"]}) in '
                                    f'{time.time() - info["t0"]:.0f} s → {os.path.basename(mp.path)}', 8000)
             if jk == self._vjob_key() and self.state.stacks:        # still this galaxy: show it
@@ -1807,11 +1950,11 @@ class MapsTab(QWidget):
         if panel.data is None:
             thr = self.snr_spin.value()
             panel.clear_image(f'all spaxels below S/N {thr:g}' if (thr > 0 and np.isfinite(ms.maps[name]).any())
-                              else 'no data')
+                              else ms.empty_msgs.get(name, 'no data'))
         if panel.bar is not None:
             panel.bar.setVisible(panel.data is not None)
         self._shown[i] = arr
-        self._shape_drawn[i] = arr.shape
+        self._shape_drawn[i] = arr.shape if panel.data is not None else None   # empty: next map autoranges
         if self._sel is not None and panel.data is not None:
             panel.set_marker(*self._sel)
         else:
@@ -2457,6 +2600,16 @@ class MapsTab(QWidget):
             es = P['err_scale'].get(res.band, 1.0)
             if abs(es - 1.0) > 0.001:
                 rows.append(f'<span style="{dim}">errors × {es:.2f} in {res.band} (null tests)</span>')
+        sep = (self.state.sep_fits.get(P.get('token')) or {}).get(res.bin_id) if g == 'ha' else None
+        if sep:                                # Halpha and [NII] with separate kinematics
+            def kin(tag):
+                return (f'v50 {_fmt(sep.get(f"{tag}_V50"))} ± {_fmt(sep.get(f"{tag}_VERR"))}, '
+                        f'σ {_fmt(sep.get(f"{tag}_SIG"))} km/s, S/N {_fmt(sep.get(f"{tag}_SNR"))}')
+            rows.append(f'<span style="{dim}">separate fit:</span> '
+                        f'<span style="color:{LINE_COLORS.get("Ha", C.TEXT)}">Hα</span> {kin("HA")}')
+            rows.append(f'<span style="color:{LINE_COLORS.get("NII6583", C.TEXT)}">[NII]</span> {kin("NII")}'
+                        + (f' · <b>Δv {_fmt(sep.get("DV_NII_HA"))} ± {_fmt(sep.get("DV_NII_HA_ERR"))} km/s</b>'
+                           if np.isfinite(_num(sep.get('DV_NII_HA'))) else ''))
         if res.note:
             rows.append(f'<span style="color:{C.AMBER}">{res.note}</span>')
         rows += self._map_values_html(ms, res.x, res.y)

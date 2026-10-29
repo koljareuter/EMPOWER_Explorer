@@ -32,10 +32,11 @@ from collections import OrderedDict
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt5.QtCore import QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QLocale, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QTextDocument
 from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QFileDialog,
-                             QFrame, QGraphicsTextItem, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QPushButton,
+                             QDoubleSpinBox, QFrame, QGraphicsTextItem, QGridLayout, QHBoxLayout, QHeaderView,
+                             QLabel, QPushButton,
                              QSizePolicy, QSlider, QSpinBox, QSplitter, QStackedWidget, QTableWidget,
                              QTableWidgetItem, QToolButton, QVBoxLayout, QWidget)
 
@@ -43,13 +44,22 @@ from empower_explorer import analysis, lines
 from empower_explorer.data.catalog import band_rank
 from empower_explorer.lines import FIT_LINES, FULL_MARKERS, LINE_COLORS, LINE_LABELS, PANELS, REST
 from empower_explorer.theme import C, band_color
-from empower_explorer.widgets.plots import (EmptyState, ImagePanel, add_vline, boxcar,
+from empower_explorer.widgets.plots import (EmptyState, ImagePanel, SpectrumViewBox, add_vline, boxcar,
                                             make_plot, style_plot_item)
 from empower_explorer.workers import run_async
 
 SPEC_DEBOUNCE_MS = 40       # aperture moved -> new spectra
 FIT_DEBOUNCE_MS = 250       # aperture moved -> new line fits (after the drag pauses)
-R_MIN, R_MAX, R_STEP = 0.5, 8.0, 0.5
+R_MIN, R_MAX, R_STEP = 0.5, 12.0, 0.5
+
+# aperture radius units: (key, button, tooltip); spin-box step per unit
+RADIUS_UNITS = [('px', 'px', 'Radii in pixels of the reference band'),
+                ('arcsec', '″', 'Radii in arcsec'),
+                ('kpc', 'kpc', 'Radii in proper kpc at the galaxy redshift (flat ΛCDM, H₀ = 70, Ωm = 0.3)'),
+                ('re', 'Rₑ', 'Radii in units of the effective radius: the half-light radius of the anchor line\n'
+                             '(Hα, else [OIII]) of kmos_snr_distribution.csv, else measured here the same way')]
+UNIT_STEP = {'px': 0.5, 'arcsec': 0.1, 'kpc': 0.5, 're': 0.25}
+UNIT_TEXT = {'px': ' px', 'arcsec': '″', 'kpc': ' kpc', 're': ' Rₑ'}
 
 # image chooser: (key, button label, line keys summed into the map, tooltip)
 IMAGE_KINDS = [
@@ -179,13 +189,14 @@ def _flat_button(text, tip, css=''):
 
 
 # ---------------------------------------------------------------------------------- background work
-def _extract_all(stacks, ref_band, x, y, r, method, subtract_bg):
-    """Worker: the aperture spectra of all bands (same sky position) - AppState.spectra() logic."""
+def _extract_all(stacks, ref_band, x, y, r, method, subtract_bg, r_in=0.0):
+    """Worker: the aperture (or annulus) spectra of all bands (same sky position) - AppState.spectra() logic."""
     ref = stacks[ref_band]
     out = {}
     for b, st in stacks.items():
         bx, by, br = analysis.transfer(ref, st, x, y, r)
-        sp = analysis.extract_spectrum(st, bx, by, br, method=method, subtract_bg=subtract_bg)
+        sp = analysis.extract_spectrum(st, bx, by, br, method=method, subtract_bg=subtract_bg,
+                                       r_in=r_in * br / r if r > 0 else 0.0)
         if sp.n_pix > 0:
             out[b] = sp
     return out
@@ -556,17 +567,17 @@ class _LinePanel:
         self.main_keys = list(spec[3]) if isinstance(spec[3], tuple) else [spec[3]]
         cell.setContentsMargins(0, 0, 0, 0)
         cell.setSpacing(0)
-        plot = cell.addPlot(row=1, col=0)
+        plot = cell.addPlot(row=1, col=0, viewBox=SpectrumViewBox())
         self.plot = plot
         self.header = _PanelHeader(plot)
         cell.addItem(self.header, row=0, col=0)
         style_plot_item(plot)
         plot.hideButtons()
         plot.getAxis('bottom').setStyle(tickTextOffset=3)
-        vb = plot.getViewBox()
-        vb.setMouseEnabled(x=True, y=False)       # wheel zooms wavelength, y follows the data
+        vb = plot.getViewBox()                    # wheel: wavelength; Shift+wheel or y axis: y
         vb.sigXRangeChanged.connect(lambda *_: self.autoscale())
         vb.sigResized.connect(lambda *_: self.autoscale())
+        vb.sigYAuto.connect(self.autoscale)       # double-click: y follows the data again
         self.curve = pg.PlotDataItem(pen=_pen(C.ACCENT, 1.0))
         self.curve.setClipToView(True)          # only the zoom window of the band is drawn
         self.curve.setZValue(5)
@@ -646,6 +657,7 @@ class _LinePanel:
         self._message('')
         self.window = window
         if not keep_x:
+            self.plot.getViewBox().y_manual = False
             self.plot.setXRange(*window, padding=0)
         self._layout_labels()
 
@@ -739,7 +751,8 @@ class _LinePanel:
             self._message('no valid data in this window')
             return
         self._message('')
-        self.plot.setYRange(*lim, padding=0)
+        if not vb.y_manual:                       # zoomed or panned in y by hand: keep that range
+            self.plot.setYRange(*lim, padding=0)
 
     def _message(self, text):
         self.msg.show_html(f'<span style="color:{C.TEXT_DIM}; font-size:10pt; font-style:italic;">'
@@ -770,14 +783,15 @@ class _FullSpectrum(QWidget):
         self.readout.setToolTip('Value under the mouse cursor')
         head.addWidget(self.readout, 1)
         lay.addLayout(head)
-        self.pw = make_plot('', 'Observed wavelength [µm]', 'S/N')
-        self.pw.setToolTip('Scroll to zoom the wavelength axis, drag to pan; the y axis follows the data.\n'
+        self.pw = make_plot('', 'Observed wavelength [µm]', 'S/N', viewBox=SpectrumViewBox())
+        self.pw.setToolTip('Scroll: zoom the wavelength axis · Shift + scroll or scroll on the y axis: zoom y\n'
+                           'Drag: pan · drag the y axis: pan y · double-click: y follows the data again\n'
                            'Right-click → View All / Export…')
         self.plot = self.pw.getPlotItem()
         self.plot.hideButtons()
         vb = self.plot.getViewBox()
-        vb.setMouseEnabled(x=True, y=False)
         vb.sigXRangeChanged.connect(lambda *_: self.autoscale())
+        vb.sigYAuto.connect(self.autoscale)
         lay.addWidget(self.pw, 1)
         self.cross = pg.InfiniteLine(angle=90, movable=False, pen=_pen(C.TEXT_DIM, 1.0, Qt.DotLine))
         self.cross.setZValue(40)
@@ -819,6 +833,7 @@ class _FullSpectrum(QWidget):
         self.plot.setLabel('bottom', xlabel, color=C.TEXT_DIM)
         self.msg.show_html('')
         if not keep_x and xrange is not None:
+            self.plot.getViewBox().y_manual = False
             self.plot.setXRange(*xrange, padding=0.01)
 
     def set_legend(self, entries, note=''):
@@ -850,7 +865,7 @@ class _FullSpectrum(QWidget):
         self.autoscale()
 
     def autoscale(self):
-        if not self.xy:
+        if not self.xy or self.plot.getViewBox().y_manual:
             return
         lo, hi = self.plot.getViewBox().viewRange()[0]
         lims = [_robust_ylim(x, y, lo, hi, self.peaks_x, PEAK_TOL_UM * 1.2, q=(0.5, 99.5), head=0.18, foot=0.05)
@@ -980,7 +995,20 @@ class _Measurements(QWidget):
     def set_fits(self, fits, info):
         a = info.anchor
         dim = f'color:{C.TEXT_DIM};'
-        if a in LINE_LABELS:
+        if info.forced_from:                 # annulus: every line forced to the centre's kinematics
+            if a in LINE_LABELS:
+                line = f'<b style="color:{LINE_COLORS.get(a, C.TEXT)};">{LINE_LABELS[a]}</b>'
+                vals = f'Δv = {info.dv:+.0f} km/s, σ = {_fmt(info.sigma_int, ".0f")} km/s'
+                self.kin.set_variants([
+                    f'<span style="{dim}">ring: all lines forced to</span> {line}<span style="{dim}"> '
+                    f'({info.anchor_band}) of the {info.forced_from}:</span> {vals}',
+                    f'<span style="{dim}">forced to</span> {line}<span style="{dim}"> (centre):</span> {vals}',
+                    f'{line} (centre): Δv {info.dv:+.0f}, σ {_fmt(info.sigma_int, ".0f")}'])
+            else:
+                self.kin.set_variants([f'<span style="{dim}">ring: the {info.forced_from} has no line strong '
+                                       'enough for kinematics - all lines forced to the catalogue z</span>',
+                                       f'<span style="{dim}">all lines forced to the catalogue z</span>'])
+        elif a in LINE_LABELS:
             line = f'<b style="color:{LINE_COLORS.get(a, C.TEXT)};">{LINE_LABELS[a]}</b>'
             vals = f'Δv = {info.dv:+.0f} km/s, σ = {_fmt(info.sigma_int, ".0f")} km/s'
             self.kin.set_variants([
@@ -1093,6 +1121,9 @@ class SpectrumTab(QWidget):
         self._spec_key = self._fit_key = None
         self._z = None                # redshift of the shown galaxy (state.z is a table lookup)
         self._data_gen = 0            # incremented for every new set of stacks (part of the cache keys)
+        self._shape = 'circle'        # aperture shape chosen ('annulus' also with r_in = 0)
+        self._unit_choice = 'px'      # radius unit chosen (shown in px while unavailable for a galaxy)
+        self._unit_values = ('px', 0.0, 2.5)   # (unit, r_in, r) last set by the user: kept for the next galaxy
         self._spec_cache = OrderedDict()   # cache key -> {band: Spectrum}       (computed in a worker)
         self._fit_cache = OrderedDict()    # cache key + z -> (fits, FitInfo)     (computed in a worker)
         self._fit_wanted = False      # fits requested while the spectra were still being extracted
@@ -1168,7 +1199,8 @@ class SpectrumTab(QWidget):
 
         self.image = ImagePanel()
         self.image.setMinimumHeight(200)
-        self.image.setToolTip('Drag the circle (or click anywhere) to move the aperture; drag its handle to resize')
+        self.image.setToolTip('Drag the circle (or click anywhere) to move the aperture; drag its handle to resize\n'
+                              '(the outer radius; an annulus keeps its inner radius, dashed)')
         self.image.apertureMoved.connect(self._roi_moved)
         self.image.apertureResized.connect(self._roi_resized)
         self.image.pixelHovered.connect(self._image_hovered)
@@ -1179,17 +1211,38 @@ class SpectrumTab(QWidget):
         lay.addSpacing(2)
         lay.addWidget(_section('Aperture'))
         row = QHBoxLayout()
-        self.r_label = QLabel('r = 2.5 px')
-        self.r_label.setMinimumWidth(135)
-        self.r_label.setToolTip('Aperture radius in pixels of the reference band and in arcsec')
-        row.addWidget(self.r_label)
+        row.setSpacing(6)
+        self.shape_seg = Segmented([('circle', 'Circle', 'Circular aperture of radius r'),
+                                    ('annulus', 'Annulus', 'Ring r_in < d ≤ r_out around the aperture centre\n'
+                                                           '(the spaxels of the circle inside are left out)')])
+        self.shape_seg.changed.connect(self._shape_selected)
+        row.addWidget(self.shape_seg)
+        row.addStretch()
+        self.unit_seg = Segmented(RADIUS_UNITS)
+        self.unit_seg.set_current('px')
+        self.unit_seg.changed.connect(self._unit_selected)
+        row.addWidget(self.unit_seg)
+        lay.addLayout(row)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        self.rin_label = _dim('r_in')
+        row.addWidget(self.rin_label)
+        self.rin_spin = self._radius_spin('Inner radius of the annulus (0: full circle)')
+        row.addWidget(self.rin_spin)
+        self.rout_label = _dim('r')
+        row.addWidget(self.rout_label)
+        self.rout_spin = self._radius_spin('Aperture radius (outer radius of an annulus)')
+        row.addWidget(self.rout_spin)
         self.r_slider = QSlider(Qt.Horizontal)
         self.r_slider.setRange(int(R_MIN / R_STEP), int(R_MAX / R_STEP))
         self.r_slider.setPageStep(2)
-        self.r_slider.setToolTip(f'Aperture radius {R_MIN:g}-{R_MAX:g} px in {R_STEP:g} px steps')
-        self.r_slider.valueChanged.connect(lambda v: self.state.set_aperture(r=v * R_STEP))
+        self.r_slider.setToolTip(f'Aperture (outer) radius {R_MIN:g}-{R_MAX:g} px in {R_STEP:g} px steps')
+        self.r_slider.valueChanged.connect(self._slider_moved)
         row.addWidget(self.r_slider, 1)
         lay.addLayout(row)
+        self.r_label = _dim('', shrink=True)
+        self.r_label.setToolTip('Aperture radius in every unit')
+        lay.addWidget(self.r_label)
         self.pos_label = _dim('', shrink=True)
         lay.addWidget(self.pos_label)
         row = QHBoxLayout()
@@ -1201,6 +1254,12 @@ class SpectrumTab(QWidget):
         row.addWidget(self.btn_ha)
         row.addWidget(self.btn_oiii)
         row.addStretch()
+        self.ring_prev = _flat_button('◀ Ring', 'Move the annulus inwards by its own width')
+        self.ring_prev.clicked.connect(lambda: self._step_ring(-1))
+        self.ring_next = _flat_button('Ring ▶', 'Move the annulus outwards by its own width')
+        self.ring_next.clicked.connect(lambda: self._step_ring(+1))
+        row.addWidget(self.ring_prev)
+        row.addWidget(self.ring_next)
         lay.addLayout(row)
 
         lay.addSpacing(2)
@@ -1307,6 +1366,7 @@ class SpectrumTab(QWidget):
                          'See the error message; select the galaxy again in the list to retry.')
 
     def _on_stacks(self, _key):
+        self._apply_unit_radii()          # e.g. 0.5-1 Rₑ stays 0.5-1 Rₑ of the new galaxy
         self._sync_telluric_check()
         if len(self._img_cache) > 60:
             self._img_cache.clear()
@@ -1314,6 +1374,7 @@ class SpectrumTab(QWidget):
         self._rebuild()
 
     def _on_redshift(self):
+        self._apply_unit_radii()          # kpc (and the Rₑ measured here) depend on z
         self.table._enable_export(False)
         self._rebuild()
 
@@ -1325,6 +1386,8 @@ class SpectrumTab(QWidget):
             self._update_spectra()
         elif name == 'mode' and shown:            # S/N <-> flux: curves, fits and axis names
             self._spec_key = self._fit_key = None
+            for vb in [p.plot.getViewBox() for p in self.panels] + [self.full.plot.getViewBox()]:
+                vb.y_manual = False               # a y range in the other quantity means nothing
             self._update_panels_info()
             self._update_spectra()
             self._update_fits()
@@ -1461,7 +1524,7 @@ class SpectrumTab(QWidget):
             return
         self.panels_info.set_variants([
             f'<span style="{dim}">x: {xl} · y: {yl} · </span>{fit}'
-            f'<span style="{dim}"> · scroll to zoom</span>',
+            f'<span style="{dim}"> · scroll: zoom λ · Shift+scroll: zoom y · double-click: auto y</span>',
             f'<span style="{dim}">x: {xl} · y: {yl} · </span>{fit}',
             f'<span style="{dim}">{xl} · {yl} · </span>{fit}',
             f'<span style="{dim}">{xl} · {yl}</span>'])
@@ -1543,15 +1606,160 @@ class SpectrumTab(QWidget):
             btn.setToolTip(f'Move the aperture to the {label} peak (brightest line spaxel)' if covered else
                            (f'{label}: no redshift' if not z else f'{label} is not covered by the loaded bands'))
 
-    def _sync_radius(self):
+    # ---------------------------------------------------------------- aperture radius and units
+    def _radius_spin(self, tip):
+        sp = QDoubleSpinBox()
+        sp.setLocale(QLocale.c())               # decimal point, as everywhere else in the app
+        sp.setDecimals(2)
+        sp.setKeyboardTracking(False)           # typed values apply on Enter / focus change
+        sp.setToolTip(tip)
+        sp.setMinimumWidth(72)
+        sp.valueChanged.connect(self._spin_changed)
+        return sp
+
+    def _px_per_unit(self, unit):
+        """Pixels of the reference band per radius unit; NaN if the unit is not available (no z, no Rₑ)."""
         s = self.state
-        r = s.ap_r
         pix = s.stacks[s.ref_band].pixscale if s.ref_band in s.stacks else 0.2
-        self.r_slider.blockSignals(True)
-        self.r_slider.setValue(int(round(np.clip(r, R_MIN, R_MAX) / R_STEP)))
-        self.r_slider.blockSignals(False)
-        rt = f'{r:.1f}' if abs(r / R_STEP - round(r / R_STEP)) < 1e-6 else f'{r:.2f}'
-        self.r_label.setText(f'r = {rt} px = {r * pix:.2f}″')
+        if unit == 'arcsec':
+            return 1.0 / pix
+        if unit == 'kpc':
+            k = analysis.kpc_per_arcsec(s.z)
+            return 1.0 / (pix * k) if np.isfinite(k) and k > 0 else np.nan
+        if unit == 're':
+            re, _ = s.effective_radius() if s.stacks else (np.nan, '')
+            return re / pix if np.isfinite(re) and re > 0 else np.nan
+        return 1.0
+
+    def _unit(self):
+        """The unit the radii are shown in: the chosen one, or px while it is not available for this galaxy
+        (the choice itself is kept for the next galaxy)."""
+        u = self._unit_choice
+        return u if np.isfinite(self._px_per_unit(u)) else 'px'
+
+    def _remember_radii(self):
+        """After a radius change by the user: keep it in the chosen unit (re-applied to the next galaxy).
+        While that unit is not available, the previous request stays."""
+        k = self._px_per_unit(self._unit_choice)
+        if np.isfinite(k):
+            s = self.state
+            self._unit_values = (self._unit_choice, s.ap_rin / k, s.ap_r / k)
+
+    def _shape_selected(self, key):
+        s = self.state
+        self._shape = key
+        if key == 'annulus' and s.ap_rin <= 0:
+            r_in = max(R_STEP, round(s.ap_r / 2 / R_STEP) * R_STEP)
+            s.set_aperture(r=max(s.ap_r, r_in + R_STEP), r_in=r_in)
+        elif key == 'circle' and s.ap_rin > 0:
+            s.set_aperture(r_in=0.0)
+        self._remember_radii()
+        self._sync_radius()
+
+    def _unit_selected(self, key):
+        self._unit_choice = key
+        self._remember_radii()
+        self._sync_radius()
+
+    def _spin_changed(self, _v=None):
+        k = self._px_per_unit(self._unit())
+        r_out = float(np.clip(self.rout_spin.value() * k, R_MIN, R_MAX))
+        r_in = float(np.clip(self.rin_spin.value() * k, 0.0, R_MAX - R_STEP)) if self._shape == 'annulus' else 0.0
+        self.state.set_aperture(r=r_out, r_in=r_in)
+        self._remember_radii()
+
+    def _slider_moved(self, v):
+        self.state.set_aperture(r=v * R_STEP)
+        self._remember_radii()
+
+    def _step_ring(self, direction):
+        s = self.state
+        width = s.ap_r - s.ap_rin
+        if width <= 0:
+            return
+        if direction > 0:
+            if s.ap_r + width > R_MAX + 1e-6:
+                return
+            s.set_aperture(r=s.ap_r + width, r_in=s.ap_r)
+        else:
+            if s.ap_rin <= 0:
+                return
+            s.set_aperture(r_in=max(0.0, s.ap_rin - width), r=s.ap_rin)
+        self._remember_radii()
+
+    def _apply_unit_radii(self):
+        """A new galaxy (or z): radii chosen in arcsec, kpc or Rₑ keep their value in that unit.  The request
+        itself is not changed (a radius clipped to R_MIN/R_MAX here is not clipped for the next galaxy)."""
+        u, rin_u, rout_u = self._unit_values
+        if u == 'px' or not self.state.stacks:
+            return
+        k = self._px_per_unit(u)
+        if not np.isfinite(k):
+            return                                 # unit not available here: keep the pixel radii
+        r_out = float(np.clip(rout_u * k, R_MIN, R_MAX))
+        r_in = float(np.clip(rin_u * k, 0.0, r_out - R_STEP)) if self._shape == 'annulus' else 0.0
+        self.state.set_aperture(r=r_out, r_in=r_in)
+
+    def _sync_radius(self):
+        """Show the state's radii in the chosen unit (widgets set without signals: no feedback)."""
+        s = self.state
+        r, r_in = s.ap_r, s.ap_rin
+        if r_in > 0:
+            self._shape = 'annulus'
+        ring = self._shape == 'annulus'
+        pix = s.stacks[s.ref_band].pixscale if s.ref_band in s.stacks else 0.2
+        kpc = analysis.kpc_per_arcsec(s.z)
+        re, re_src = s.effective_radius() if s.stacks else (np.nan, '')
+        self.unit_seg.set_item_enabled('kpc', bool(np.isfinite(kpc)),
+                                       RADIUS_UNITS[2][2] if np.isfinite(kpc) else 'kpc: needs a redshift')
+        self.unit_seg.set_item_enabled('re', bool(np.isfinite(re)),
+                                       f'{RADIUS_UNITS[3][2]}\nRₑ = {re:.2f}″ ({re_src})' if np.isfinite(re)
+                                       else 'Rₑ: not known for this galaxy (no line half-light radius)')
+        u = self._unit()
+        self.unit_seg.set_current(u)
+        self.shape_seg.set_current('annulus' if ring else 'circle')
+        k = self._px_per_unit(u)
+        widgets = (self.r_slider, self.rin_spin, self.rout_spin)
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            self.r_slider.setValue(int(round(np.clip(r, R_MIN, R_MAX) / R_STEP)))
+            for sp, lo, hi, val in ((self.rin_spin, 0.0, R_MAX - R_STEP, r_in), (self.rout_spin, R_MIN, R_MAX, r)):
+                sp.setRange(lo / k, hi / k)
+                sp.setSingleStep(UNIT_STEP[u])
+                sp.setSuffix(UNIT_TEXT[u])
+                sp.setValue(val / k)
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+        for w in (self.rin_label, self.rin_spin, self.ring_prev, self.ring_next):
+            w.setVisible(ring)
+        self.rout_label.setText('r_out' if ring else 'r')
+        if ring:
+            self.ring_prev.setEnabled(r_in > 0)
+            self.ring_next.setEnabled(r + (r - r_in) <= R_MAX + 1e-6)
+
+        def fmt(v, unit_px):
+            return f'{v / unit_px:.2f}' if np.isfinite(unit_px) else '?'
+        parts = []
+        for name, upx in ((' px', 1.0), ('″', 1.0 / pix), (' kpc', 1.0 / (pix * kpc) if np.isfinite(kpc) else np.nan),
+                          (' Rₑ', re / pix if np.isfinite(re) else np.nan)):
+            if np.isfinite(upx):
+                parts.append(f'{fmt(r_in, upx)}–{fmt(r, upx)}{name}' if ring else f'{fmt(r, upx)}{name}')
+        text = ('annulus ' if ring else 'r = ') + ' · '.join(parts)
+        if np.isfinite(re):
+            short = {'measured in the notebooks': 'measured'}.get(re_src, re_src)
+            text += f'  (Rₑ = {re:.2f}″, {short})'
+        self.r_label.setText(text)
+        tip = 'Aperture radius in every unit'
+        if np.isfinite(re):
+            tip += f'\nRₑ = {re:.2f}″' + (f' = {re * kpc:.2f} kpc' if np.isfinite(kpc) else '') + f' ({re_src})'
+        if np.isfinite(kpc):
+            tip += f'\n1″ = {kpc:.2f} kpc at z = {s.z:.4f} (flat ΛCDM, H₀ = 70, Ωm = 0.3)'
+        if self._unit_choice != u:
+            tip += f'\n{dict((k_, l_) for k_, l_, _ in RADIUS_UNITS)[self._unit_choice]} is not available for this ' \
+                   'galaxy: shown in px; your radii in that unit come back with the next galaxy that has it'
+        self.r_label.setToolTip(tip)
 
     def _sync_option_widgets(self):
         o = self.state.options
@@ -1632,8 +1840,8 @@ class SpectrumTab(QWidget):
         if band not in s.stacks or self.image.data is None:
             self.image.roi.hide()
             return
-        x, y, r = (s.ap_x, s.ap_y, s.ap_r) if band == s.ref_band else s.aperture_in(band)
-        self.image.set_aperture(x, y, r)
+        x, y, r, r_in = (s.ap_x, s.ap_y, s.ap_r, s.ap_rin) if band == s.ref_band else s.annulus_in(band)
+        self.image.set_aperture(x, y, r, r_in)
 
     def _roi_moved(self, x, y):
         s = self.state
@@ -1652,6 +1860,7 @@ class SpectrumTab(QWidget):
         r = float(np.clip(r, R_MIN, R_MAX))
         if abs(r - s.ap_r) > 1e-3:
             s.set_aperture(r=r)
+            self._remember_radii()
 
     def _image_hovered(self, ix, iy, v):
         if self._img_kind == 'snr':
@@ -1663,14 +1872,14 @@ class SpectrumTab(QWidget):
     # ================================================================== spectra
     def _ap_key(self):
         s = self.state
-        return (s.key, s.ref_band, round(s.ap_x, 2), round(s.ap_y, 2), round(s.ap_r, 2),
+        return (s.key, s.ref_band, round(s.ap_x, 2), round(s.ap_y, 2), round(s.ap_r, 6), round(s.ap_rin, 6),
                 s.options.get('method'), s.options.get('subtract_bg'), self._z)
 
     def _cache_key(self):
         """Key of the spectra of the current aperture (data generation + aperture + options)."""
         s = self.state
-        return (self._data_gen, s.key, s.ref_band, round(s.ap_x, 2), round(s.ap_y, 2), round(s.ap_r, 2),
-                s.options.get('method'), bool(s.options.get('subtract_bg')))
+        return (self._data_gen, s.key, s.ref_band, round(s.ap_x, 2), round(s.ap_y, 2), round(s.ap_r, 6),
+                round(s.ap_rin, 6), s.options.get('method'), bool(s.options.get('subtract_bg')))
 
     def _fit_cache_key(self):
         return self._cache_key() + (round(self._z, 6),)
@@ -1685,7 +1894,7 @@ class SpectrumTab(QWidget):
     def _request_spectra(self, ck):
         s = self.state
         self._jobs.request(('spec', ck), _extract_all, s.stacks, s.ref_band, s.ap_x, s.ap_y, s.ap_r,
-                           s.options.get('method', 'sum'), bool(s.options.get('subtract_bg')))
+                           s.options.get('method', 'sum'), bool(s.options.get('subtract_bg')), s.ap_rin)
 
     def _job_done(self, jkey, res, err):
         """A background extraction or fit finished (GUI thread)."""
@@ -1734,7 +1943,7 @@ class SpectrumTab(QWidget):
             if p.band in disp:
                 p.set_curve(*disp[p.band])
             else:
-                p.outside(f'aperture outside the {p.band} field')
+                p.outside(self._empty_text(p.band))
 
         ylabel = 'S/N' if snr else f'Flux [{_unit(s.stacks[s.ref_band])}]'
         note = ''
@@ -1745,7 +1954,7 @@ class SpectrumTab(QWidget):
             if moved:
                 disp = {b: (x, y * scales[b]) for b, (x, y) in disp.items()}
                 note = ', '.join(f'{b} ×{v:.2f}' for b, v in moved.items()) + f' (matched to {ref})'
-        msg = '' if spectra else 'the aperture lies outside the data of all bands'
+        msg = '' if spectra else self._empty_text()
         self.full.set_curves(disp, ylabel, msg)
         self.full.set_legend([(b, s.stacks[b].describe(), b in spectra) for b in sorted(s.stacks, key=band_rank)],
                              note)
@@ -1754,10 +1963,34 @@ class SpectrumTab(QWidget):
             for p in self.panels:
                 p.fade_model()
 
+    def _ring_empty(self, band=None):
+        """True if the annulus has no spaxel centre although its outer circle lies on the data."""
+        s = self.state
+        band = band or s.ref_band
+        if s.ap_rin <= 0 or band not in s.stacks:
+            return False
+        st = s.stacks[band]
+        x, y, r, _ = s.annulus_in(band)
+        return bool((analysis.aperture_mask(st.cube.shape[1:], x, y, r) & (st.coverage > 0.5)).any())
+
+    def _empty_text(self, band=None):
+        if self._ring_empty(band):
+            return 'no spaxel centre lies in the ring - widen it'
+        return f'aperture outside the {band} field' if band else 'the aperture lies outside the data of all bands'
+
+    def _sky_note(self, spectra):
+        """Bands where 'Subtract residual sky' is on but could not be done (too few spaxels outside the aperture)."""
+        if not self.state.options.get('subtract_bg'):
+            return []
+        return [b for b, sp in spectra.items() if not sp.bg_subtracted]
+
     def _update_pos_label(self, spectra):
         s = self.state
         n = spectra[s.ref_band].n_pix if s.ref_band in spectra else 0
-        extra = '' if n else ' · outside the data'
+        extra = '' if n else (' · no spaxel centre in the ring' if self._ring_empty() else ' · outside the data')
+        missed = self._sky_note(spectra)
+        if missed:
+            extra += f' · residual sky not subtracted in {"/".join(missed)} (too few spaxels ≥ r + 2 px away)'
         self.pos_label.setText(f'centre x = {s.ap_x:.1f}, y = {s.ap_y:.1f} px ({s.ref_band}) · '
                                f'{n} spaxels{extra}')
 
@@ -1786,7 +2019,11 @@ class SpectrumTab(QWidget):
         fck = self._fit_cache_key()
         res = self._fit_cache.get(fck)
         if res is None:
-            self._jobs.request(('fit', fck), analysis.fit_galaxy, spectra, s.stacks, self._z)
+            if s.ap_rin > 0:                # annulus: lines forced to the central aperture's kinematics
+                self._jobs.request(('fit', fck), analysis.fit_annulus, spectra, s.stacks, self._z, s.ref_band,
+                                   s.ap_x, s.ap_y, s.options.get('method', 'sum'), bool(s.options.get('subtract_bg')))
+            else:
+                self._jobs.request(('fit', fck), analysis.fit_galaxy, spectra, s.stacks, self._z)
             return
         if self._spec_key != key:          # make sure the drawn spectra belong to this aperture
             self._update_spectra()
@@ -1808,7 +2045,7 @@ class SpectrumTab(QWidget):
         if spectra:
             self.table.set_fits(fits, info)
         else:
-            self.table.clear('the aperture lies outside the data')
+            self.table.clear(self._empty_text())
         self.table.default_name = f'{(s.key or "galaxy").replace(" ", "_")}_lines.csv'
 
     def _draw_fit(self, p, fits, sp, snr, f):
@@ -1862,6 +2099,13 @@ class SpectrumTab(QWidget):
         p.set_badge(variants, detected, '\n'.join(tip))
 
     # ================================================================== export
+    def _sky_done_text(self):
+        """'True' / 'False' / 'not in IZ' - what was really done (the option can not always be applied)."""
+        if not self.state.options.get('subtract_bg'):
+            return 'False'
+        missed = self._sky_note(self._spec_cache.get(self._cache_key()) or {})
+        return f'True except {"/".join(missed)} (too few spaxels outside the aperture)' if missed else 'True'
+
     def _export_meta(self):
         s = self.state
         z = s.z
@@ -1869,6 +2113,8 @@ class SpectrumTab(QWidget):
         variant = s.catalog.variant if s.catalog is not None else s.variant
         return [f'EMPOWER Explorer · {s.key} · reduction {variant}',
                 f'z = {z:.5f} ({r.z_type or "?"}{", manual" if r.override else ""})' if z else 'z unknown',
-                f'aperture x = {s.ap_x:.2f}, y = {s.ap_y:.2f}, r = {s.ap_r:.2f} px on the {s.ref_band} grid; '
-                f'method {s.options.get("method")}; residual sky subtracted: {bool(s.options.get("subtract_bg"))}',
+                (f'annulus x = {s.ap_x:.2f}, y = {s.ap_y:.2f}, {s.ap_rin:.2f} < r <= {s.ap_r:.2f} px'
+                 if s.ap_rin > 0 else f'aperture x = {s.ap_x:.2f}, y = {s.ap_y:.2f}, r = {s.ap_r:.2f} px') +
+                f' on the {s.ref_band} grid; '
+                f'method {s.options.get("method")}; residual sky subtracted: {self._sky_done_text()}',
                 f'flux unit: {self.table.flux_unit} x micron; velocities in km/s']

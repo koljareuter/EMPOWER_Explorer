@@ -14,8 +14,9 @@ import numpy as np
 from astropy.io import fits
 
 from empower_explorer import config, engine
+from empower_explorer.data.stack import data_ext
 
-CACHE_VERSION = 3
+CACHE_VERSION = 4        # 4: the cube extension is found by name part (DATA in EXTNAME)
 
 _EXTRA_KEYS = {          # primary-header keywords kept for the Data QA tab
     'object': 'OBJECT', 'ra': 'RA', 'dec': 'DEC', 'date_obs': 'DATE-OBS', 'exptime_hdr': 'EXPTIME',
@@ -31,10 +32,9 @@ def _header_info(path, variant_dir):
     with fits.open(path, memmap=True) as h:
         h0 = h[0].header
         shape = None
-        for e in h[1:]:
-            if str(e.header.get('EXTNAME', '')).upper() == 'DATA':
-                shape = [int(e.header.get(f'NAXIS{i}', 0)) for i in (3, 2, 1)]
-                break
+        e = data_ext(h)                      # 'DATA', 'CUBE-DATA', 'IFU.3.DATA', ...
+        if e is not None:
+            shape = [int(e.header.get(f'NAXIS{i}', 0)) for i in (3, 2, 1)]
     targ = (h0.get('HIERARCH ESO OBS TARG NAME') or '').strip()
     tid = str(h0.get('HIERARCH ESO PRO REFLEX SUFFIX') or '').strip()
     band = (h0.get('HIERARCH ESO INS GRAT1 ID') or '').strip()

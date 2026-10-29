@@ -56,6 +56,8 @@ class AppState(QObject):
     apertureChanged = pyqtSignal()
     redshiftChanged = pyqtSignal()
     optionsChanged = pyqtSignal(str)
+    sepFitsChanged = pyqtSignal(object)    # product token whose separate Halpha/[NII] fit started / finished
+    productsChanged = pyqtSignal(str)      # galaxy whose map products changed (a new Voronoi fit)
     status = pyqtSignal(str, int)
     busy = pyqtSignal(str, int, int)
     error = pyqtSignal(str, str)
@@ -70,6 +72,10 @@ class AppState(QObject):
         self.ref_band = None
         self.ap_x = self.ap_y = None
         self.ap_r = 2.5
+        self.ap_rin = 0.0                      # inner radius: > 0 makes the aperture the annulus ap_rin < d <= ap_r
+        self.sep_fits = {}                     # product token -> {bin: vb.fit_hanii_separate result} (Maps, Radial)
+        self.sep_running = set()               # product tokens whose separate fit runs now
+        self._re_cache = {}
         self.options = dict(OPTIONS)
         self._stack_cache = OrderedDict()     # key -> {band: BandStack}
         self._spec_cache = {}
@@ -290,13 +296,21 @@ class AppState(QObject):
         self.redshiftChanged.emit()
 
     # ------------------------------------------------------------------ aperture
-    def set_aperture(self, x=None, y=None, r=None):
+    def set_aperture(self, x=None, y=None, r=None, r_in=None):
+        """Move or resize the aperture (pixels of the reference band).  r_in > 0 makes it an annulus;
+        the ring keeps at least 0.5 px width (a smaller outer radius pushes the inner one in)."""
         if x is not None:
             self.ap_x = float(x)
         if y is not None:
             self.ap_y = float(y)
         if r is not None:
             self.ap_r = float(max(0.5, r))
+        if r_in is not None:
+            self.ap_rin = float(max(0.0, r_in))
+            if self.ap_rin > 0 and self.ap_r < self.ap_rin + 0.5:
+                self.ap_r = self.ap_rin + 0.5
+        elif self.ap_rin > 0 and self.ap_r < self.ap_rin + 0.5:
+            self.ap_rin = max(0.0, self.ap_r - 0.5)
         self.apertureChanged.emit()
 
     def set_ref_band(self, band):
@@ -304,6 +318,7 @@ class AppState(QObject):
         if band not in self.stacks or band == self.ref_band:
             return
         x, y, r = analysis.transfer(self.stacks[self.ref_band], self.stacks[band], self.ap_x, self.ap_y, self.ap_r)
+        self.ap_rin *= r / self.ap_r
         self.ref_band = band
         self.ap_x, self.ap_y, self.ap_r = x, y, r
         self.apertureChanged.emit()
@@ -311,6 +326,72 @@ class AppState(QObject):
     def aperture_in(self, band):
         """(x, y, r) of the aperture on the grid of `band` (same sky position)."""
         return analysis.transfer(self.stacks[self.ref_band], self.stacks[band], self.ap_x, self.ap_y, self.ap_r)
+
+    def annulus_in(self, band):
+        """(x, y, r, r_in) of the aperture on the grid of `band`; r_in = 0 for a full circle."""
+        x, y, r = self.aperture_in(band)
+        return x, y, r, self.ap_rin * r / self.ap_r
+
+    def effective_radius(self):
+        """(R_e [arcsec], source) of the current galaxy - the anchor-line (Halpha, else [OIII]) half-light
+        radius of the notebooks (kmos_snr_distribution.csv: re_px x 0.2", measured or the sample median),
+        else measured here by the same curve of growth on the map of the first of Halpha, [OIII]5007, Hbeta
+        that is covered, around its peak (>= 1 px); (nan, '') if neither works."""
+        z = self.z
+        ck = (self.variant, self.key, None if z is None else round(z, 6))
+        if ck in self._re_cache:
+            return self._re_cache[ck]
+        out = (np.nan, '')
+        tab = self.catalog.tables.get('snr_distribution') if self.catalog is not None else None
+        if tab is not None and 'key' in tab.columns and 're_px' in tab.columns:
+            rows = tab[tab['key'] == self.key]
+            re_px = rows['re_px'].dropna()
+            if len(re_px):
+                src = str(rows['re_src'].dropna().iloc[0]) if 're_src' in rows and rows['re_src'].notna().any() else ''
+                out = (float(re_px.iloc[0]) * 0.2, {'measured': 'measured in the notebooks',
+                                                      'median': 'sample median of the notebooks'}.get(src, 'notebooks'))
+        if not np.isfinite(out[0]) and self.stacks and z:
+            for line in ('Ha', 'OIII5007', 'Hb'):
+                band = analysis.pick_band(self.stacks, lines.REST[line] * (1 + z))
+                if band is None:
+                    continue
+                st = self.stacks[band]
+                x, y, found = analysis.line_peak_center(st, z, line)
+                if found:
+                    r = analysis.half_light_radius(analysis.line_map(st, z, line), x, y)
+                    if np.isfinite(r) and r >= 1.0:
+                        out = (r * st.pixscale, f'{lines.LINE_LABELS[line]} curve of growth')
+                break                         # the anchor line decides, as in the notebooks
+        self._re_cache[ck] = out
+        return out
+
+    # ------------------------------------------------------------------ Halpha and [NII] separately
+    def start_separate_fit(self, token, label, job, *args):
+        """Run job(*args) -> {bin: result} (vb.hanii_separate) once per product token, for the Maps and the
+        Radial profiles tab alike; the result lands in sep_fits.  sepFitsChanged(token) when it starts and ends.
+        An empty result (no bin with Halpha+[NII]) is reported, not stored, so it can be tried again."""
+        if token in self.sep_running or token in self.sep_fits:
+            return
+        self.sep_running.add(token)
+        self.sepFitsChanged.emit(token)
+
+        def done(res, token=token):
+            self.sep_running.discard(token)
+            if res:
+                self.sep_fits[token] = res
+                n_n = sum(np.isfinite(v.get('NII_V50', np.nan)) for v in res.values())
+                self.status.emit(f'{label}: Hα and [NII] fitted separately in {len(res)} bins '
+                                 f'([NII] kinematics in {n_n})', 6000)
+            else:
+                self.status.emit(f'{label}: no bin with Hα+[NII] could be fitted separately', 6000)
+            self.sepFitsChanged.emit(token)
+
+        def fail(msg, token=token):
+            self.sep_running.discard(token)
+            self.error.emit('Hα / [NII] separately', msg)
+            self.sepFitsChanged.emit(token)
+
+        run_async(job, *args, on_done=done, on_error=fail)
 
     # ------------------------------------------------------------------ options
     def set_option(self, name, value):
@@ -324,8 +405,8 @@ class AppState(QObject):
 
     # ------------------------------------------------------------------ spectra and fits (cached)
     def _ap_key(self):
-        return (self.key, self.ref_band, round(self.ap_x or 0, 2), round(self.ap_y or 0, 2), round(self.ap_r, 2),
-                self.options['method'], self.options['subtract_bg'])
+        return (self.key, self.ref_band, round(self.ap_x or 0, 2), round(self.ap_y or 0, 2), round(self.ap_r, 6),
+                round(self.ap_rin, 6), self.options['method'], self.options['subtract_bg'])
 
     def spectra(self):
         """{band: analysis.Spectrum} for the current aperture (same sky position in every band)."""
@@ -335,9 +416,9 @@ class AppState(QObject):
         if k not in self._spec_cache:
             out = {}
             for b, st in self.stacks.items():
-                x, y, r = self.aperture_in(b)
+                x, y, r, r_in = self.annulus_in(b)
                 sp = analysis.extract_spectrum(st, x, y, r, method=self.options['method'],
-                                               subtract_bg=self.options['subtract_bg'])
+                                               subtract_bg=self.options['subtract_bg'], r_in=r_in)
                 if sp.n_pix > 0:
                     out[b] = sp
             if len(self._spec_cache) > 50:
@@ -354,7 +435,11 @@ class AppState(QObject):
         if k not in self._fit_cache:
             if len(self._fit_cache) > 50:
                 self._fit_cache.clear()
-            self._fit_cache[k] = analysis.fit_galaxy(self.spectra(), self.stacks, z)
+            if self.ap_rin > 0:               # annulus: forced to the kinematics of the central aperture
+                self._fit_cache[k] = analysis.fit_annulus(self.spectra(), self.stacks, z, self.ref_band, self.ap_x,
+                                                          self.ap_y, self.options['method'], self.options['subtract_bg'])
+            else:
+                self._fit_cache[k] = analysis.fit_galaxy(self.spectra(), self.stacks, z)
         return self._fit_cache[k]
 
     def products(self):

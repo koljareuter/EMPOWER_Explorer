@@ -6,20 +6,28 @@
 Windows does not let programs pin themselves to the taskbar.  Afterwards: Start -> type 'EMPOWER'
 -> right-click -> 'Pin to taskbar' (or drag the desktop icon onto the taskbar).  The shortcut carries
 the same AppUserModelID as the running app (branding.APP_ID), so the pinned button and the open
-window share one taskbar button.  No console window: it starts pythonw.exe.
+window share one taskbar button.  It starts this copy of the app: the .exe itself, or pythonw.exe
+with EMPOWER_Explorer.py (no console window).
+
+Because of the shared ID, a shortcut left pointing to a moved or deleted copy takes the icon away from
+the taskbar button and leaves a pinned button that starts nothing; the app rewrites such a stale
+shortcut at start (refresh_stale).
 """
 import os
+import re
+import struct
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 from empower_explorer import APP_NAME
-from empower_explorer.branding import APP_ID, ICON_ICO
+from empower_explorer.branding import APP_ID, launch_command
 
 _PS = r'''
 $ErrorActionPreference = 'Stop'
 $lnk, $target, $arguments, $workdir, $icon, $appid, $desc = $args
+if ($arguments -eq 'NOARGS') { $arguments = '' }   # the .exe: no arguments (an empty one would get lost)
 $ws = New-Object -ComObject WScript.Shell
 $s = $ws.CreateShortcut($lnk)
 $s.TargetPath = $target
@@ -73,37 +81,89 @@ Write-Output ("AppUserModelID=" + $item.ExtendedProperty('System.AppUserModel.ID
 '''
 
 
+def _desktop():
+    """The user's Desktop folder (also when OneDrive moved it)."""
+    import ctypes
+    buf = ctypes.create_unicode_buffer(260)
+    if ctypes.windll.shell32.SHGetFolderPathW(None, 0x10, None, 0, buf) == 0 and buf.value:   # CSIDL_DESKTOPDIRECTORY
+        return Path(buf.value)
+    return None
+
+
 def _folders(desktop):
     out = [Path(os.environ['APPDATA']) / 'Microsoft' / 'Windows' / 'Start Menu' / 'Programs']
-    if desktop:
-        r = subprocess.run(['powershell', '-NoProfile', '-Command', "[Environment]::GetFolderPath('Desktop')"],
-                           capture_output=True, text=True)
-        if r.returncode == 0 and r.stdout.strip():
-            out.append(Path(r.stdout.strip()))
+    if desktop and _desktop() is not None:
+        out.append(_desktop())
     return out
 
 
-def create(desktop=True):
-    """Write the shortcuts; returns [(path, AppUserModelID read back)]."""
+def read_lnk(path):
+    """{'target', 'arguments', 'workdir', 'icon'} of a .lnk file (MS-SHLLINK format); '' where absent."""
+    b = Path(path).read_bytes()
+    flags = struct.unpack_from('<I', b, 20)[0]
+    out = dict(target='', arguments='', workdir='', icon='')
+    pos = 76                                                     # after the header
+    if flags & 0x1:                                              # HasLinkTargetIDList
+        pos += 2 + struct.unpack_from('<H', b, pos)[0]
+    if flags & 0x2:                                              # HasLinkInfo: the target's local path
+        size, _hsize, info_flags, _volume, base = struct.unpack_from('<5I', b, pos)
+        if info_flags & 0x1:
+            start = pos + base
+            out['target'] = b[start:b.index(b'\0', start)].decode('mbcs', 'replace')
+        pos += size
+    wide = bool(flags & 0x80)                                    # IsUnicode
+    for flag, key in ((0x4, ''), (0x8, ''), (0x10, 'workdir'), (0x20, 'arguments'), (0x40, 'icon')):
+        if flags & flag:                                         # counted strings in this order
+            n = struct.unpack_from('<H', b, pos)[0] * (2 if wide else 1)
+            text = b[pos + 2:pos + 2 + n].decode('utf-16-le' if wide else 'mbcs', 'replace')
+            pos += 2 + n
+            if key:
+                out[key] = text
+    return out
+
+
+def is_stale(info):
+    """True if a shortcut can no longer start the app: its program, the script it runs or its icon is gone."""
+    paths = [info['target'], re.sub(r',-?\d+$', '', os.path.expandvars(info['icon']))]
+    paths += re.findall(r'"([^"]+\.pyw?)"', info['arguments'])
+    return not info['target'] or any(p and not os.path.exists(p) for p in paths)
+
+
+def refresh_stale():
+    """Rewrite the app's Start-menu and Desktop shortcuts that point to a moved or deleted copy, so that
+    they start this one.  Returns the rewritten paths; never raises (runs in the background at start)."""
+    if sys.platform != 'win32':
+        return []
+    done = []
+    try:
+        for folder in _folders(desktop=True):
+            lnk = folder / f'{APP_NAME}.lnk'
+            if lnk.is_file() and is_stale(read_lnk(lnk)):
+                done += [path for path, _ in create(folders=[folder])]
+    except Exception:
+        pass
+    return done
+
+
+def create(desktop=True, folders=None):
+    """Write the shortcuts (to `folders`, default Start menu and optionally Desktop) for this copy of the
+    app; returns [(path, AppUserModelID read back)]."""
     if sys.platform != 'win32':
         raise SystemExit('Shortcuts are only made on Windows.')
-    repo = Path(__file__).resolve().parents[1]
-    exe = Path(sys.executable).resolve()
-    pythonw = exe.with_name('pythonw.exe')
-    target = pythonw if pythonw.exists() else exe
-    script = repo / 'EMPOWER_Explorer.py'
+    target, arguments, workdir, icon = launch_command()
     with tempfile.NamedTemporaryFile('w', suffix='.ps1', delete=False, encoding='utf-8-sig') as f:
         f.write(_PS)
         ps1 = f.name
     done = []
     try:
-        for folder in _folders(desktop):
+        for folder in folders or _folders(desktop):
             folder.mkdir(parents=True, exist_ok=True)
             lnk = folder / f'{APP_NAME}.lnk'
             r = subprocess.run(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1,
-                                str(lnk), str(target), f'"{script}"', str(repo), ICON_ICO, APP_ID,
+                                str(lnk), target, arguments or 'NOARGS', workdir, icon, APP_ID,
                                 'EMPOWER KMOS combined cubes explorer'],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding='oem', errors='replace',
+                               creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))   # no console flash
             if r.returncode != 0:
                 raise RuntimeError(f'Could not create {lnk}:\n{r.stderr.strip() or r.stdout.strip()}')
             appid = next((ln.split('=', 1)[1] for ln in r.stdout.splitlines() if ln.startswith('AppUserModelID=')), '')

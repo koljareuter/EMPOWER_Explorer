@@ -231,7 +231,8 @@ def _pretty(name):
 
 def is_velocity_map(name):
     n = name.upper()
-    return (n in ('V', 'V_MODEL', 'KIN_V_HA', 'KIN_V_MODEL', 'KIN_V_RESID') or '_DV' in n
+    return (n in ('V', 'V_MODEL', 'KIN_V_HA', 'KIN_V_MODEL', 'KIN_V_RESID', 'DV_NII_HA') or '_DV' in n
+            or n.endswith('_SEP_V50')
             or bool(re.match(rf'^({_GROUP_RE})_(V50|V10|V90|C\d_V)$', n)))
 
 
